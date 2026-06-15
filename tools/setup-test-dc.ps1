@@ -216,7 +216,7 @@ function Get-OrCreateIamRole {
                 Action = "sts:AssumeRole"
             }
         )
-    } | ConvertTo-Json -Depth 3
+    } | ConvertTo-Json -Depth 3 -Compress
 
     Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", $trustPolicy, "--output", "json") | Out-Null
 
