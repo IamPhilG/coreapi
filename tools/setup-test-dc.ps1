@@ -243,6 +243,7 @@ $prevConfig         = $null
 $existingInstanceId = ""
 $existingEipAllocId = ""
 $isUpdate           = $false
+$Region             = ""
 
 if (Test-Path $ConfigPath) {
     try {
@@ -250,6 +251,7 @@ if (Test-Path $ConfigPath) {
         $ti                 = $prevConfig.TestInfrastructure
         $existingInstanceId = if ($ti.ExistingInstanceId) { $ti.ExistingInstanceId } else { "" }
         $existingEipAllocId = if ($ti.ElasticIpAllocationId) { $ti.ElasticIpAllocationId } else { "" }
+        $Region             = if ($ti.AwsRegion) { $ti.AwsRegion } else { "" }
         $isUpdate           = $true
     } catch { }
 }
@@ -263,17 +265,17 @@ if ($isUpdate) {
     if (-not (Read-YesNo "Continue?" $true)) { Write-Host "Aborted."; exit 0 }
 }
 
-Write-Step 1 10 "AWS session (profile: $Profile)"
+Write-Step 1 11 "AWS session (profile: $Profile)"
 Assert-AwsSession
 
-Write-Step 2 10 "Region and instance type"
+Write-Step 2 11 "Region and instance type"
 $defaultRegion = if ($prevConfig) { $prevConfig.TestInfrastructure.AwsRegion } else { "us-east-1" }
 $defaultType   = if ($prevConfig) { $prevConfig.TestInfrastructure.InstanceType } else { "t3.medium" }
 
 $Region       = Read-WithDefault "AWS region" $defaultRegion
 $InstanceType = Read-WithDefault "Instance type (t3.medium ~`$0.075/hr)" $defaultType
 
-Write-Step 3 10 "Active Directory domain"
+Write-Step 3 11 "Active Directory domain"
 $defaultDomain  = if ($prevConfig) { $prevConfig.TestInfrastructure.DomainName } else { "corp.local" }
 $defaultNetbios = if ($prevConfig) { $prevConfig.TestInfrastructure.DomainNetbiosName } else { "CORP" }
 
@@ -294,7 +296,7 @@ $AdAdminPassword = if ($existingPwd -and (Read-YesNo "Keep existing password?" $
     $p1
 }
 
-Write-Step 5 10 "Elastic IP"
+Write-Step 5 11 "Elastic IP"
 Write-Info "Keeps the DC at the same address across start/stop cycles."
 Write-Info "Without one the IP changes every restart -- config update needed."
 
@@ -308,7 +310,25 @@ if ($existingEipAllocId) {
     Write-Ok "Allocated: $($eip.PublicIp) ($EipAllocationId)"
 }
 
-Write-Step 6 10 "Terminate previous instance"
+Write-Step 6 11 "Terminate previous instance"
+
+# If we have an Elastic IP but no instance ID, query AWS for the associated instance
+if ($existingEipAllocId -and -not $existingInstanceId -and $Region) {
+    Write-Info "Checking for instance associated with Elastic IP: $existingEipAllocId"
+    $output = Invoke-Aws @(
+        "ec2", "describe-addresses",
+        "--allocation-ids", $existingEipAllocId,
+        "--query", "Addresses[0].InstanceId",
+        "--region", $Region,
+        "--output", "text"
+    ) -AllowFailure
+    $output = ($output -join "").Trim()
+    if ($output -and $output -ne "None") {
+        $existingInstanceId = $output
+        Write-Info "Found instance: $existingInstanceId"
+    }
+}
+
 if ($existingInstanceId) {
     Write-Info "Previous instance: $existingInstanceId"
     if (Read-YesNo "Terminate and launch fresh instance?" $true) {
@@ -324,7 +344,7 @@ if ($existingInstanceId) {
     Write-Info "No previous instance to terminate."
 }
 
-Write-Step 7 10 "Run mode"
+Write-Step 7 11 "Run mode"
 Write-Info "test - instance stopped after each test run (cheapest)"
 Write-Info "demo - instance kept running + AD seeded with demo objects"
 
