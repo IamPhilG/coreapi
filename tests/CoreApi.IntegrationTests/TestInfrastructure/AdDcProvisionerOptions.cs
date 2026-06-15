@@ -4,6 +4,13 @@ public sealed class AdDcProvisionerOptions
 {
     public bool ProvisionAdDc { get; init; }
     public string AwsRegion { get; init; } = "us-east-1";
+
+    /// <summary>
+    /// Named AWS CLI profile to use for all EC2 operations (credential chain + region).
+    /// Matches the profile in ~/.aws/credentials or ~/.aws/config.
+    /// Leave empty to use the default credential chain (env vars, instance role, default profile).
+    /// </summary>
+    public string AwsProfile { get; init; } = string.Empty;
     public string InstanceType { get; init; } = "t3.medium";
     public string AmiId { get; init; } = string.Empty;
     public string SecurityGroupId { get; init; } = string.Empty;

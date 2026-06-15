@@ -5,6 +5,7 @@ using System.Text;
 using Amazon;
 using Amazon.EC2;
 using Amazon.EC2.Model;
+using Amazon.Runtime.CredentialManagement;
 using Microsoft.Extensions.Configuration;
 
 namespace CoreApi.IntegrationTests.TestInfrastructure;
@@ -66,7 +67,7 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
 
         ValidateRequiredOptions(_options);
 
-        _ec2 = new AmazonEC2Client(RegionEndpoint.GetBySystemName(_options.AwsRegion));
+        _ec2 = CreateEc2Client();
 
         string instanceId;
         if (!string.IsNullOrEmpty(_options.ExistingInstanceId))
@@ -132,6 +133,25 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         }
 
         _ec2.Dispose();
+    }
+
+    // ── EC2 client factory ───────────────────────────────────────────────────
+
+    private AmazonEC2Client CreateEc2Client()
+    {
+        var region = RegionEndpoint.GetBySystemName(_options.AwsRegion);
+
+        if (string.IsNullOrEmpty(_options.AwsProfile))
+            return new AmazonEC2Client(region);
+
+        var chain = new CredentialProfileStoreChain();
+        if (!chain.TryGetAWSCredentials(_options.AwsProfile, out var credentials))
+            throw new InvalidOperationException(
+                $"AWS profile '{_options.AwsProfile}' not found. " +
+                $"Run: aws configure --profile {_options.AwsProfile}  " +
+                $"or: aws sso login --profile {_options.AwsProfile}");
+
+        return new AmazonEC2Client(credentials, region);
     }
 
     // ── Validation ──────────────────────────────────────────────────────────

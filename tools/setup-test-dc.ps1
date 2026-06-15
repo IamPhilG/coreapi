@@ -6,31 +6,42 @@
 
 .DESCRIPTION
     What the wizard does, in order:
-      1  Validates AWS CLI credentials
+      1  Validates (and if needed re-authenticates) the AWS CLI session
       2  Asks for region and instance type
       3  Asks for the AD domain name and administrator password
       4  Optionally allocates an Elastic IP so the DC always has the same address
       5  Finds the latest Windows Server 2022 Base AMI in the chosen region
-      6  Creates (or reuses) a Security Group 'coreapi-test-dc' with inbound rules
+      6  Creates (or reuses) Security Group 'coreapi-test-dc' with inbound rules
          for LDAP (389), LDAPS (636), and RDP (3389) from your current public IP
       7  Asks for the run mode: test or demo
       8  Writes tests\CoreApi.IntegrationTests\appsettings.Development.json
       9  Optionally runs the integration tests immediately
 
-    The script is idempotent: re-running it reuses existing AWS resources and
-    preserves the ExistingInstanceId written after the first test run.
+    Idempotent: re-running reuses existing AWS resources and preserves the
+    ExistingInstanceId written after the first test run.
+
+.PARAMETER Profile
+    Named AWS CLI profile to use (matches ~/.aws/credentials or ~/.aws/config).
+    Default: 'default'.
+    Examples: 'coreapi-dev', 'my-sso-profile'
+
+    The same profile name is written to appsettings.Development.json so the
+    xUnit fixture uses identical credentials.
 
 .PARAMETER Mode
-    'test'  — instance is stopped after each test run (cheapest)
+    'test'  — instance stopped after each test run (cheapest)
     'demo'  — instance stays running after tests, AD seeded with demo objects
     Omit to be asked interactively.
 
 .EXAMPLE
     .\tools\setup-test-dc.ps1
-    .\tools\setup-test-dc.ps1 -Mode demo
+    .\tools\setup-test-dc.ps1 -Profile coreapi-dev
+    .\tools\setup-test-dc.ps1 -Profile my-sso -Mode demo
 #>
 [CmdletBinding()]
 param(
+    [string]$Profile = "default",
+
     [ValidateSet("test", "demo", "")]
     [string]$Mode = ""
 )
@@ -38,8 +49,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$RepoRoot    = Split-Path $PSScriptRoot -Parent
-$ConfigPath  = Join-Path $RepoRoot "tests\CoreApi.IntegrationTests\appsettings.Development.json"
+$RepoRoot   = Split-Path $PSScriptRoot -Parent
+$ConfigPath = Join-Path $RepoRoot "tests\CoreApi.IntegrationTests\appsettings.Development.json"
 
 # ── Console helpers ──────────────────────────────────────────────────────────
 
@@ -73,113 +84,170 @@ function Read-SecureString([string]$prompt) {
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
 }
 
-function Write-Info([string]$text)    { Write-Host "  $text" -ForegroundColor DarkGray }
-function Write-Ok([string]$text)      { Write-Host "  $text" -ForegroundColor Green }
-function Write-Warn([string]$text)    { Write-Host "  $text" -ForegroundColor Yellow }
+function Write-Info([string]$text) { Write-Host "  $text" -ForegroundColor DarkGray }
+function Write-Ok([string]$text)   { Write-Host "  $text" -ForegroundColor Green }
+function Write-Warn([string]$text) { Write-Host "  $text" -ForegroundColor Yellow }
 
 # ── AWS helpers ──────────────────────────────────────────────────────────────
 
-function Assert-AwsCli {
-    if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
-        throw "AWS CLI not found. Install from https://aws.amazon.com/cli/ then run 'aws configure'."
+# Run an AWS CLI command with --profile and capture output.
+# Returns stdout as a string array; throws on non-zero exit after reauth attempt.
+function Invoke-Aws {
+    param(
+        [string[]]$Arguments,
+        [switch]$AllowFailure
+    )
+
+    $args = $Arguments + @("--profile", $Profile)
+    $output = & aws @args 2>&1
+    if ($LASTEXITCODE -eq 0) { return $output }
+
+    if ($AllowFailure) { return $null }
+    throw "AWS CLI error (exit $LASTEXITCODE): $($output -join ' ')"
+}
+
+function Assert-AwsSession {
+    Write-Info "Checking AWS session for profile '$Profile'..."
+
+    $output = & aws sts get-caller-identity --profile $Profile --output json 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $id = $output | ConvertFrom-Json
+        Write-Ok "Account : $($id.Account)"
+        Write-Ok "Identity: $($id.Arn)"
+        return
     }
-    $raw = aws sts get-caller-identity --output json
-    if ($LASTEXITCODE -ne 0) {
-        throw "AWS credentials not configured. Run 'aws configure' or export AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY."
+
+    # Session expired — attempt re-authentication
+    Write-Warn "Session expired or not found for profile '$Profile'."
+
+    # Try SSO login first (works for IAM Identity Center profiles)
+    Write-Info "Attempting: aws sso login --profile $Profile"
+    aws sso login --profile $Profile
+    if ($LASTEXITCODE -eq 0) {
+        $output = & aws sts get-caller-identity --profile $Profile --output json
+        if ($LASTEXITCODE -eq 0) {
+            $id = $output | ConvertFrom-Json
+            Write-Ok "Re-authenticated. Account: $($id.Account)"
+            return
+        }
     }
-    $id = $raw | ConvertFrom-Json
-    Write-Info "Authenticated as: $($id.Arn)"
+
+    # SSO failed — give explicit guidance
+    Write-Host ""
+    Write-Host "  Could not authenticate automatically. Run ONE of:" -ForegroundColor Red
+    Write-Host "    aws sso login --profile $Profile          # IAM Identity Center" -ForegroundColor White
+    Write-Host "    aws configure --profile $Profile          # Access key / secret" -ForegroundColor White
+    Write-Host "  Then re-run this script." -ForegroundColor White
+    exit 1
 }
 
 function Get-MyPublicIp {
     try   { (Invoke-RestMethod "https://checkip.amazonaws.com").Trim() }
-    catch { Read-Host "  Could not auto-detect your public IP. Enter it (without /32)" }
+    catch { Read-Host "  Could not detect your public IP. Enter it (without /32)" }
 }
 
 function Get-LatestWin2022Ami([string]$Region) {
-    $amiId = aws ec2 describe-images --owners amazon `
-        --filters "Name=name,Values=Windows_Server-2022-English-Full-Base-*" `
-                  "Name=state,Values=available" `
-        --query "sort_by(Images, &CreationDate)[-1].ImageId" `
-        --region $Region --output text
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($amiId) -or $amiId -eq "None") {
+    $output = Invoke-Aws @(
+        "ec2", "describe-images",
+        "--owners", "amazon",
+        "--filters", "Name=name,Values=Windows_Server-2022-English-Full-Base-*",
+                     "Name=state,Values=available",
+        "--query", "sort_by(Images, &CreationDate)[-1].ImageId",
+        "--region", $Region,
+        "--output", "text"
+    )
+    $amiId = ($output -join "").Trim()
+    if (-not $amiId -or $amiId -eq "None") {
         throw "No Windows Server 2022 AMI found in region '$Region'."
     }
-    $amiId.Trim()
+    $amiId
 }
 
 function Get-OrCreateSecurityGroup([string]$Region) {
-    $name     = "coreapi-test-dc"
-    $existing = aws ec2 describe-security-groups `
-        --filters "Name=group-name,Values=$name" `
-        --query "SecurityGroups[0].GroupId" `
-        --region $Region --output text
-    if ($LASTEXITCODE -eq 0 -and $existing -and $existing -ne "None") {
-        Write-Info "Reusing Security Group: $($existing.Trim())"
-        return $existing.Trim()
+    $name = "coreapi-test-dc"
+    $existing = Invoke-Aws @(
+        "ec2", "describe-security-groups",
+        "--filters", "Name=group-name,Values=$name",
+        "--query", "SecurityGroups[0].GroupId",
+        "--region", $Region,
+        "--output", "text"
+    ) -AllowFailure
+    $existing = ($existing -join "").Trim()
+
+    if ($existing -and $existing -ne "None") {
+        Write-Info "Reusing Security Group: $existing"
+        return $existing
     }
+
     Write-Info "Creating Security Group '$name'..."
-    $raw  = aws ec2 create-security-group `
-        --group-name $name `
-        --description "CoreAPI test/demo DC — LDAP + LDAPS + RDP" `
-        --region $Region --output json
-    ($raw | ConvertFrom-Json).GroupId
+    $raw = Invoke-Aws @(
+        "ec2", "create-security-group",
+        "--group-name", $name,
+        "--description", "CoreAPI test/demo DC — LDAP + LDAPS + RDP",
+        "--region", $Region,
+        "--output", "json"
+    )
+    ($raw -join "" | ConvertFrom-Json).GroupId
 }
 
 function Add-InboundRule([string]$SgId, [int]$Port, [string]$Cidr, [string]$Region) {
-    # Non-zero exit on duplicate rule is harmless — ignore it
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     aws ec2 authorize-security-group-ingress `
         --group-id $SgId --protocol tcp --port $Port --cidr $Cidr `
-        --region $Region --output json | Out-Null
+        --region $Region --profile $Profile --output json | Out-Null
     $ErrorActionPreference = $prev
+    # Non-zero = duplicate rule = harmless
 }
 
 function New-ElasticIp([string]$Region) {
-    $raw = aws ec2 allocate-address --domain vpc --region $Region --output json
-    if ($LASTEXITCODE -ne 0) { throw "Failed to allocate Elastic IP." }
-    $raw | ConvertFrom-Json
+    $raw = Invoke-Aws @(
+        "ec2", "allocate-address",
+        "--domain", "vpc",
+        "--region", $Region,
+        "--output", "json"
+    )
+    $raw -join "" | ConvertFrom-Json
 }
 
 # ── Read existing config (for re-runs) ──────────────────────────────────────
 
+$prevConfig         = $null
 $existingInstanceId = ""
 $existingEipAllocId = ""
 $isUpdate           = $false
 
 if (Test-Path $ConfigPath) {
     try {
-        $prev = Get-Content $ConfigPath -Raw | ConvertFrom-Json
-        $ti   = $prev.TestInfrastructure
+        $prevConfig         = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+        $ti                 = $prevConfig.TestInfrastructure
         $existingInstanceId = if ($ti.ExistingInstanceId) { $ti.ExistingInstanceId } else { "" }
         $existingEipAllocId = if ($ti.ElasticIpAllocationId) { $ti.ElasticIpAllocationId } else { "" }
-        $isUpdate = $true
+        $isUpdate           = $true
     } catch { }
 }
 
 # ── Banner ───────────────────────────────────────────────────────────────────
 
 Write-Banner "CoreAPI — EC2 test/demo DC setup wizard"
+Write-Info "Profile: $Profile"
 Write-Info "Output : $ConfigPath"
-if ($existingInstanceId) {
-    Write-Info "Existing instance detected: $existingInstanceId (will be preserved)"
-}
+if ($existingInstanceId) { Write-Info "Existing instance: $existingInstanceId (will be preserved)" }
 if ($isUpdate) {
     Write-Warn "Config file already exists. Answers below will overwrite it."
     if (-not (Read-YesNo "Continue?" $true)) { Write-Host "Aborted."; exit 0 }
 }
 
-# ── Step 1 — AWS credentials ─────────────────────────────────────────────────
+# ── Step 1 — AWS session ─────────────────────────────────────────────────────
 
-Write-Step 1 7 "AWS credentials"
-Assert-AwsCli
+Write-Step 1 7 "AWS session (profile: $Profile)"
+Assert-AwsSession
 
 # ── Step 2 — Region & instance type ─────────────────────────────────────────
 
 Write-Step 2 7 "Region & instance type"
-$defaultRegion = if ($isUpdate -and $prev.TestInfrastructure.AwsRegion) { $prev.TestInfrastructure.AwsRegion } else { "us-east-1" }
-$defaultType   = if ($isUpdate -and $prev.TestInfrastructure.InstanceType) { $prev.TestInfrastructure.InstanceType } else { "t3.medium" }
+$defaultRegion = if ($prevConfig) { $prevConfig.TestInfrastructure.AwsRegion } else { "us-east-1" }
+$defaultType   = if ($prevConfig) { $prevConfig.TestInfrastructure.InstanceType } else { "t3.medium" }
 
 $Region       = Read-WithDefault "AWS region" $defaultRegion
 $InstanceType = Read-WithDefault "Instance type (t3.medium ~`$0.075/hr)" $defaultType
@@ -187,8 +255,8 @@ $InstanceType = Read-WithDefault "Instance type (t3.medium ~`$0.075/hr)" $defaul
 # ── Step 3 — AD domain ───────────────────────────────────────────────────────
 
 Write-Step 3 7 "Active Directory domain"
-$defaultDomain  = if ($isUpdate -and $prev.TestInfrastructure.DomainName) { $prev.TestInfrastructure.DomainName } else { "corp.local" }
-$defaultNetbios = if ($isUpdate -and $prev.TestInfrastructure.DomainNetbiosName) { $prev.TestInfrastructure.DomainNetbiosName } else { "CORP" }
+$defaultDomain  = if ($prevConfig) { $prevConfig.TestInfrastructure.DomainName } else { "corp.local" }
+$defaultNetbios = if ($prevConfig) { $prevConfig.TestInfrastructure.DomainNetbiosName } else { "CORP" }
 
 $DomainName    = Read-WithDefault "Domain FQDN" $defaultDomain
 $DomainNetbios = Read-WithDefault "NETBIOS name" $defaultNetbios
@@ -196,15 +264,15 @@ $DomainNetbios = Read-WithDefault "NETBIOS name" $defaultNetbios
 # ── Step 4 — Password ────────────────────────────────────────────────────────
 
 Write-Step 4 7 "AD Administrator password"
-Write-Info "Min 8 chars with uppercase, lowercase, digit and symbol."
+Write-Info "Min 8 chars — uppercase + lowercase + digit + symbol."
 Write-Info "Written to the local config file only (gitignored — never committed)."
 
-$existingPwd     = if ($isUpdate -and $prev.TestInfrastructure.AdAdminPassword) { $prev.TestInfrastructure.AdAdminPassword } else { "" }
+$existingPwd     = if ($prevConfig) { $prevConfig.TestInfrastructure.AdAdminPassword } else { "" }
 $AdAdminPassword = if ($existingPwd -and (Read-YesNo "Keep existing password?" $true)) {
     $existingPwd
 } else {
     $p1 = Read-SecureString "Password"
-    $p2 = Read-SecureString "Confirm password"
+    $p2 = Read-SecureString "Confirm"
     if ($p1 -ne $p2) { throw "Passwords do not match." }
     $p1
 }
@@ -212,8 +280,8 @@ $AdAdminPassword = if ($existingPwd -and (Read-YesNo "Keep existing password?" $
 # ── Step 5 — Elastic IP ──────────────────────────────────────────────────────
 
 Write-Step 5 7 "Elastic IP"
-Write-Info "An Elastic IP keeps the DC at the same address across start/stop cycles."
-Write-Info "Without one you must update ExistingInstanceId after each start."
+Write-Info "Keeps the DC at the same address across start/stop cycles."
+Write-Info "Without one the IP changes every restart — config update needed."
 
 $EipAllocationId = $existingEipAllocId
 if ($existingEipAllocId) {
@@ -229,7 +297,7 @@ if ($existingEipAllocId) {
 
 Write-Step 6 7 "Run mode"
 Write-Info "test  — instance stopped after each test run (cheapest)"
-Write-Info "demo  — instance kept running + demo AD objects seeded (Users / Groups / SvcAccounts)"
+Write-Info "demo  — instance kept running + AD seeded with demo objects"
 
 if (-not $Mode) {
     $modeInput = Read-WithDefault "Mode" "test"
@@ -244,7 +312,7 @@ Write-Ok "Mode: $Mode (KeepRunning=$KeepRunning, SeedDemoData=$SeedDemoData)"
 
 Write-Step 7 7 "Provisioning AWS resources"
 
-Write-Info "Finding latest Windows Server 2022 Base AMI in $Region..."
+Write-Info "Finding latest Windows Server 2022 AMI in $Region..."
 $AmiId = Get-LatestWin2022Ami $Region
 Write-Ok "AMI: $AmiId"
 
@@ -254,17 +322,18 @@ Write-Ok "Security Group: $SgId"
 Write-Info "Detecting your public IP..."
 $myIp   = Get-MyPublicIp
 $myCidr = "$myIp/32"
-Write-Info "Adding inbound rules for $myCidr..."
-Add-InboundRule $SgId 389  $myCidr $Region   # LDAP
-Add-InboundRule $SgId 636  $myCidr $Region   # LDAPS
-Add-InboundRule $SgId 3389 $myCidr $Region   # RDP (troubleshooting)
-Write-Ok "Inbound: TCP 389 (LDAP), 636 (LDAPS), 3389 (RDP) from $myCidr"
+Write-Info "Adding inbound rules for $myCidr (idempotent)..."
+Add-InboundRule $SgId 389  $myCidr $Region
+Add-InboundRule $SgId 636  $myCidr $Region
+Add-InboundRule $SgId 3389 $myCidr $Region
+Write-Ok "TCP 389 (LDAP) + 636 (LDAPS) + 3389 (RDP) from $myCidr"
 
 # ── Write config ─────────────────────────────────────────────────────────────
 
 $config = [ordered]@{
     TestInfrastructure = [ordered]@{
         ProvisionAdDc           = $true
+        AwsProfile              = $Profile
         AwsRegion               = $Region
         InstanceType            = $InstanceType
         AmiId                   = $AmiId
@@ -288,18 +357,18 @@ Write-Ok "Written: $ConfigPath"
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 Write-Banner "Setup complete"
-Write-Host "  Mode          : $Mode" -ForegroundColor White
+Write-Host "  Profile       : $Profile" -ForegroundColor White
+Write-Host "  Account       : $(aws sts get-caller-identity --profile $Profile --query Account --output text)" -ForegroundColor White
 Write-Host "  Region        : $Region" -ForegroundColor White
 Write-Host "  AMI           : $AmiId" -ForegroundColor White
 Write-Host "  Security Group: $SgId" -ForegroundColor White
-if ($EipAllocationId) {
-    Write-Host "  Elastic IP    : $EipAllocationId" -ForegroundColor White
-}
+if ($EipAllocationId) { Write-Host "  Elastic IP    : $EipAllocationId" -ForegroundColor White }
+Write-Host "  Mode          : $Mode" -ForegroundColor White
 Write-Host ""
-Write-Info "First run: ~12-15 min (Windows boot + AD DS promotion + reboot)."
-Write-Info "Later runs reuse the stopped instance: ~2-3 min."
+Write-Info "First run : ~12-15 min (Windows boot + AD DS promotion + reboot)."
+Write-Info "Later runs: ~2-3 min (restart stopped instance)."
 if ($Mode -eq "demo") {
-    Write-Info "After tests, the DC stays running. Point coreapi at the IP printed in test output."
+    Write-Info "DC stays running after tests — point coreapi at the IP shown in test output."
 }
 Write-Host ""
 
@@ -307,11 +376,8 @@ if (Read-YesNo "Run integration tests now?" $true) {
     Push-Location $RepoRoot
     try {
         dotnet test tests\CoreApi.IntegrationTests --filter "Category=Integration" -v normal
-        if ($LASTEXITCODE -eq 0) {
-            Write-Ok "All integration tests passed."
-        } else {
-            Write-Warn "Some tests failed — check output above."
-        }
+        if ($LASTEXITCODE -eq 0) { Write-Ok "All integration tests passed." }
+        else                     { Write-Warn "Some tests failed — check output above." }
     } finally {
         Pop-Location
     }
