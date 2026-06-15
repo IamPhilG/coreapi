@@ -23,7 +23,7 @@ Core AD DS gateway for the Ouritres org. Higher-level topic APIs (user managemen
 ## Confirmed architectural decisions
 
 | Decision | Choice |
-|----------|--------|
+| --- | --- |
 | Language / framework | C# / .NET 9 / ASP.NET Core Web API |
 | Caller authentication | JWT Bearer token — issuer/authority is **configurable at deploy time**, not hardcoded |
 | Deployment | AWS (exact target TBD) |
@@ -49,12 +49,12 @@ Core AD DS gateway for the Ouritres org. Higher-level topic APIs (user managemen
 | Git | 2.52.0 |
 | OS | Windows 11 |
 
-**Local LDAP test target:** Not yet configured. Integration tests require one of:
+**Local LDAP test target:** Two options:
 
-- Windows Server eval with AD DS role (preferred — highest fidelity)
-- Samba AD DC container via Docker (`docker run samba/samba-ad-dc`)
+- **Option A (manual):** Set `LDAP__Host`, `LDAP__BaseDn`, `LDAP__ServiceAccountUser`, `LDAP__ServiceAccountPassword` env vars pointing at any live DC (Windows Server eval or Samba AD container).
+- **Option B (auto-provisioned EC2):** Copy `tests/CoreApi.IntegrationTests/appsettings.Development.template.json` → `appsettings.Development.json`, set `TestInfrastructure:ProvisionAdDc: true`, fill in `AmiId`, `SecurityGroupId`, `AdAdminPassword`. The `AdDcProvisionerFixture` launches a Windows Server EC2 instance, installs AD DS via UserData, waits for LDAP port 389, runs tests, then stops the instance. Subsequent runs reuse the stopped instance via `ExistingInstanceId`.
 
-Configure the target in `appsettings.Development.json` before running any integration tests.
+`tests/**/appsettings.Development.json` is gitignored — never commit it.
 
 **AWS deployment target:** Not yet decided (ECS / EKS / Beanstalk). Finalize before Spec 9.
 

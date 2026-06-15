@@ -486,3 +486,6 @@ $RECYCLE.BIN/
 # Claude Code: commit settings, skills, and knowledge-base; exclude personal memory
 .claude/memory/
 .claude/settings.local.json
+
+# Test infrastructure settings — contain AWS credentials and AD passwords; never commit
+tests/**/appsettings.Development.json

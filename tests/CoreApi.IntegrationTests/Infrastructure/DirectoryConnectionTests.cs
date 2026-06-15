@@ -1,31 +1,39 @@
 using System.DirectoryServices.Protocols;
 using CoreApi.Infrastructure;
+using CoreApi.IntegrationTests.TestInfrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace CoreApi.IntegrationTests.Infrastructure;
 
 /// <summary>
-/// Requires a real LDAP target. Configure via environment variables before running:
-///   LDAP__Host, LDAP__BaseDn, LDAP__Port, LDAP__UseTls,
-///   LDAP__ServiceAccountUser, LDAP__ServiceAccountPassword
-/// Or populate appsettings.Development.json with real DC values.
+/// Requires a real LDAP target. Two ways to provide one:
+///
+/// Option A — Manual (existing DC or Samba container):
+///   Set env vars: LDAP__Host, LDAP__BaseDn, LDAP__Port, LDAP__UseTls,
+///                 LDAP__ServiceAccountUser, LDAP__ServiceAccountPassword
+///
+/// Option B — Auto-provisioned EC2 (set in tests/CoreApi.IntegrationTests/appsettings.Development.json):
+///   TestInfrastructure:ProvisionAdDc = true
+///   TestInfrastructure:ExistingInstanceId = i-xxxx  (or leave empty to launch fresh)
+///   See appsettings.Development.template.json for all options.
 /// </summary>
+[Collection("AdDc")]
 public class DirectoryConnectionTests : IDisposable
 {
     private readonly LdapDirectoryConnection _connection;
     private readonly string _baseDn;
 
-    public DirectoryConnectionTests()
+    public DirectoryConnectionTests(AdDcProvisionerFixture provisioner)
     {
         var options = new DirectoryConnectionOptions
         {
-            Host = Environment.GetEnvironmentVariable("LDAP__Host") ?? "localhost",
-            BaseDn = Environment.GetEnvironmentVariable("LDAP__BaseDn") ?? "DC=corp,DC=local",
-            Port = int.TryParse(Environment.GetEnvironmentVariable("LDAP__Port"), out var p) ? p : 389,
-            UseTls = bool.TryParse(Environment.GetEnvironmentVariable("LDAP__UseTls"), out var tls) && tls,
-            ServiceAccountUser = Environment.GetEnvironmentVariable("LDAP__ServiceAccountUser") ?? string.Empty,
-            ServiceAccountPassword = Environment.GetEnvironmentVariable("LDAP__ServiceAccountPassword") ?? string.Empty,
+            Host = provisioner.ResolvedHost,
+            BaseDn = provisioner.ResolvedBaseDn,
+            Port = provisioner.ResolvedPort,
+            UseTls = provisioner.ResolvedUseTls,
+            ServiceAccountUser = provisioner.ResolvedServiceAccountUser,
+            ServiceAccountPassword = provisioner.ResolvedServiceAccountPassword,
             TimeoutSeconds = 10
         };
 
