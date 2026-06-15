@@ -5,7 +5,7 @@
 Read these files at the start of every session before doing any work:
 
 - [.claude/memory/user_profile.md](.claude/memory/user_profile.md)
-- [.claude/memory/project_coreapi_goal.md](.claude/memory/project_coreapi_goal.md)
+- [.claude/knowledge-base/project_coreapi_goal.md](.claude/knowledge-base/project_coreapi_goal.md)
 - [.claude/memory/feedback_no_writes_outside_repo.md](.claude/memory/feedback_no_writes_outside_repo.md)
 - [.claude/knowledge-base/ad-ds-reference.md](.claude/knowledge-base/ad-ds-reference.md)
 
