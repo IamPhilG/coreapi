@@ -207,9 +207,7 @@ function Get-OrCreateIamRole {
     }
 
     Write-Info "Creating IAM role with SSM permissions..."
-    $trustPolicyJson = @"
-{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}
-"@
+    $trustPolicyJson = '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 
     Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", $trustPolicyJson, "--output", "json") | Out-Null
 
