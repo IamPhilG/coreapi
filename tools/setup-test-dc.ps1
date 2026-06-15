@@ -86,6 +86,7 @@ function Invoke-Aws {
     $cmdArgs = $Arguments + @("--profile", $AwsProfile)
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
+    Write-Debug "AWS Command: aws $($cmdArgs -join ' ')"
     $output = & aws @cmdArgs 2>&1
     $ErrorActionPreference = $prev
     if ($LASTEXITCODE -eq 0) { return $output }
@@ -208,10 +209,15 @@ function Get-OrCreateIamRole {
 
     Write-Info "Creating IAM role with SSM permissions..."
     $trustPolicyJson = '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+    Write-Debug "Trust Policy JSON: $trustPolicyJson"
 
     $tempFile = [System.IO.Path]::GetTempFileName()
     try {
-        $trustPolicyJson | Set-Content -Path $tempFile -Encoding UTF8 -NoNewline
+        [System.IO.File]::WriteAllText($tempFile, $trustPolicyJson, [System.Text.Encoding]::UTF8)
+        Write-Debug "Policy written to: $tempFile"
+        $fileContent = Get-Content -Path $tempFile -Raw
+        Write-Debug "File content: $fileContent"
+
         Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", "file://$tempFile", "--output", "json") | Out-Null
     } finally {
         Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
