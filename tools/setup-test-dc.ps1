@@ -213,12 +213,7 @@ function Get-OrCreateIamRole {
     $tempFile = [System.IO.Path]::GetTempFileName()
     try {
         [System.IO.File]::WriteAllText($tempFile, $trustPolicyJson, [System.Text.Encoding]::UTF8)
-
-        $tempFileFormatted = $tempFile -replace '\\', '/'
-        $fileUri = "file:///$tempFileFormatted"
-        Write-Debug "File URI for AWS CLI: $fileUri"
-
-        Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", $fileUri, "--output", "json") | Out-Null
+        Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", $tempFile, "--output", "json") | Out-Null
     } finally {
         Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
     }
