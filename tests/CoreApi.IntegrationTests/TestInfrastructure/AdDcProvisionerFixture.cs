@@ -244,18 +244,37 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         }
     }
 
-    private string BuildUserDataScript() => $"""
+    private string BuildUserDataScript() => $$"""
         <powershell>
         $ErrorActionPreference = 'Stop'
-        Install-WindowsFeature AD-Domain-Services -IncludeManagementTools
-        Import-Module ADDSDeployment
-        $password = ConvertTo-SecureString '{_options.AdAdminPassword}' -AsPlainText -Force
-        Install-ADDSForest `
-            -DomainName '{_options.DomainName}' `
-            -DomainNetbiosName '{_options.DomainNetbiosName}' `
-            -SafeModeAdministratorPassword $password `
-            -InstallDns `
-            -Force
+        $logFile = 'C:\AddsSetup.log'
+
+        try {
+            Add-Content $logFile "$(Get-Date): Starting AD DS setup"
+
+            Add-Content $logFile "$(Get-Date): Installing AD DS..."
+            Install-WindowsFeature AD-Domain-Services -IncludeManagementTools | Out-String | Add-Content $logFile
+
+            Add-Content $logFile "$(Get-Date): Importing ADDSDeployment module..."
+            Import-Module ADDSDeployment
+
+            Add-Content $logFile "$(Get-Date): Creating safe mode password..."
+            $password = ConvertTo-SecureString '{{_options.AdAdminPassword}}' -AsPlainText -Force
+
+            Add-Content $logFile "$(Get-Date): Installing AD DS Forest..."
+            Install-ADDSForest `
+                -DomainName '{{_options.DomainName}}' `
+                -DomainNetbiosName '{{_options.DomainNetbiosName}}' `
+                -SafeModeAdministratorPassword $password `
+                -InstallDns `
+                -Force | Out-String | Add-Content $logFile
+
+            Add-Content $logFile "$(Get-Date): AD DS setup completed successfully"
+        } catch {
+            Add-Content $logFile "$(Get-Date): ERROR: $_"
+            Add-Content $logFile "$(Get-Date): Stack trace: $($_.ScriptStackTrace)"
+            throw
+        }
         </powershell>
         """;
 
@@ -494,6 +513,13 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             }
             catch (OperationCanceledException)
             {
+                Console.WriteLine(
+                    $"[AdDcProvisioner] LDAP port 389 on {host} did not open within {_options.LdapReadyTimeoutSeconds}s.");
+                Console.WriteLine("[AdDcProvisioner] Check UserData logs on the instance: C:\\AddsSetup.log");
+                if (!string.IsNullOrEmpty(_launchedInstanceId))
+                {
+                    await PrintInstanceSetupLogsAsync(_launchedInstanceId);
+                }
                 throw new TimeoutException(
                     $"LDAP port 389 on {host} did not open within {_options.LdapReadyTimeoutSeconds}s. " +
                     "The DC may still be promoting -- increase LdapReadyTimeoutSeconds or check EC2 console.");
@@ -507,6 +533,22 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
                         $"LDAP port 389 on {host} did not open within {_options.LdapReadyTimeoutSeconds}s.");
                 }
             }
+        }
+    }
+
+    private async Task PrintInstanceSetupLogsAsync(string instanceId)
+    {
+        try
+        {
+            Console.WriteLine("\n[AdDcProvisioner] Attempting to retrieve UserData logs from instance...");
+            await Task.CompletedTask;
+            // Note: This would require SSM Session Manager or RDP access to retrieve the file.
+            // For now, we can only suggest manual inspection via EC2 console or Systems Manager.
+            Console.WriteLine("[AdDcProvisioner] To inspect logs, use Systems Manager Session Manager or RDP into the instance.");
+        }
+        catch
+        {
+            // Silently fail — log retrieval not critical
         }
     }
 
