@@ -209,14 +209,10 @@ function Get-OrCreateIamRole {
 
     Write-Info "Creating IAM role with SSM permissions..."
     $trustPolicyJson = '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
-
-    $tempFile = [System.IO.Path]::GetTempFileName()
-    try {
-        [System.IO.File]::WriteAllText($tempFile, $trustPolicyJson, [System.Text.Encoding]::UTF8)
-        Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", $tempFile, "--output", "json") | Out-Null
-    } finally {
-        Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
-    }
+    # PS 5.1 passes string args to native exes via CommandLineToArgvW, which strips bare " chars.
+    # Escaping each " as \" causes CommandLineToArgvW to emit a literal " in the received string.
+    $escapedPolicy = $trustPolicyJson -replace '"', '\"'
+    Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", $escapedPolicy, "--output", "json") | Out-Null
 
     Write-Info "Attaching AmazonSSMManagedInstanceCore policy..."
     Invoke-Aws @("iam", "attach-role-policy", "--role-name", $roleName, "--policy-arn", "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore") | Out-Null
