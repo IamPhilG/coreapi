@@ -1,5 +1,6 @@
 using System.DirectoryServices.Protocols;
 using CoreApi.Infrastructure;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace CoreApi.IntegrationTests.Infrastructure;
@@ -17,18 +18,10 @@ public class DirectoryConnectionTests : IDisposable
 
     public DirectoryConnectionTests()
     {
-        // Partial options object created to extract BaseDn — host and baseDn duplicated below
-        var configOptions = new DirectoryConnectionOptions
+        var options = new DirectoryConnectionOptions
         {
             Host = Environment.GetEnvironmentVariable("LDAP__Host") ?? "localhost",
             BaseDn = Environment.GetEnvironmentVariable("LDAP__BaseDn") ?? "DC=corp,DC=local",
-        };
-        _baseDn = configOptions.BaseDn;
-
-        var options = new DirectoryConnectionOptions
-        {
-            Host = configOptions.Host,
-            BaseDn = configOptions.BaseDn,
             Port = int.TryParse(Environment.GetEnvironmentVariable("LDAP__Port"), out var p) ? p : 389,
             UseTls = bool.TryParse(Environment.GetEnvironmentVariable("LDAP__UseTls"), out var tls) && tls,
             ServiceAccountUser = Environment.GetEnvironmentVariable("LDAP__ServiceAccountUser") ?? string.Empty,
@@ -36,7 +29,10 @@ public class DirectoryConnectionTests : IDisposable
             TimeoutSeconds = 10
         };
 
-        _connection = new LdapDirectoryConnection(Options.Create(options));
+        _baseDn = options.BaseDn;
+        _connection = new LdapDirectoryConnection(
+            Options.Create(options),
+            NullLogger<LdapDirectoryConnection>.Instance);
     }
 
     [Fact]
