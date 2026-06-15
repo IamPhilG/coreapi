@@ -59,7 +59,12 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         _options = LoadOptions();
 
         if (!_options.ProvisionAdDc)
+        {
+            WarnIfNoLdapTarget();
             return;
+        }
+
+        ValidateRequiredOptions(_options);
 
         _ec2 = new AmazonEC2Client(RegionEndpoint.GetBySystemName(_options.AwsRegion));
 
@@ -127,6 +132,38 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         }
 
         _ec2.Dispose();
+    }
+
+    // ── Validation ──────────────────────────────────────────────────────────
+
+    private static void ValidateRequiredOptions(AdDcProvisionerOptions opts)
+    {
+        var missing = new List<string>();
+
+        if (string.IsNullOrEmpty(opts.AmiId) && string.IsNullOrEmpty(opts.ExistingInstanceId))
+            missing.Add("AmiId (or ExistingInstanceId for an existing DC)");
+        if (string.IsNullOrEmpty(opts.SecurityGroupId))
+            missing.Add("SecurityGroupId");
+        if (string.IsNullOrEmpty(opts.AdAdminPassword))
+            missing.Add("AdAdminPassword");
+
+        if (missing.Count > 0)
+            throw new InvalidOperationException(
+                "EC2 provisioner is enabled (ProvisionAdDc=true) but required settings are missing: " +
+                string.Join(", ", missing) + ". " +
+                "Run 'tools\\setup-test-dc.ps1' from the repository root to configure the environment. " +
+                "For manual setup see README.md > Integration tests > Option B.");
+    }
+
+    private void WarnIfNoLdapTarget()
+    {
+        bool hasHost = !string.IsNullOrEmpty(ResolvedHost) && ResolvedHost != "localhost";
+        bool hasUser = !string.IsNullOrEmpty(ResolvedServiceAccountUser);
+        if (!hasHost || !hasUser)
+            Console.WriteLine(
+                "[AdDcProvisioner] WARNING: ProvisionAdDc=false and LDAP__Host / LDAP__ServiceAccountUser " +
+                "are not set. Integration tests will fail to connect. " +
+                "Run 'tools\\setup-test-dc.ps1' or set LDAP__* env vars.");
     }
 
     // ── Seed ────────────────────────────────────────────────────────────────

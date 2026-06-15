@@ -14,24 +14,31 @@ Runs integration tests against the real LDAP target. Integration tests hit a liv
 
 ### Step 1 — Verify LDAP target is configured
 
-Two modes. Check which is active:
+Three modes. Check which is active:
 
-**Mode A — Manual target (default)**
-Read `src/CoreApi/appsettings.Development.json` or check env vars:
-- `LDAP__Host` — must be non-empty
-- `LDAP__BaseDn` — must be non-empty
-- `LDAP__ServiceAccountUser` — must be non-empty
-
-If all three are missing or empty AND Mode B is not active: stop and tell the user to configure a target before running integration tests. Do not proceed.
+**Mode A — Manual target**
+Check env vars `LDAP__Host`, `LDAP__BaseDn`, `LDAP__ServiceAccountUser`.
+If all three are set and non-empty: proceed to Step 2.
 
 **Mode B — Auto-provisioned EC2**
 Read `tests/CoreApi.IntegrationTests/appsettings.Development.json`.
-If `TestInfrastructure:ProvisionAdDc` is `true`, the `AdDcProvisionerFixture` will handle provisioning automatically. No manual env vars needed — proceed directly to build.
+If `TestInfrastructure:ProvisionAdDc` is `true` and the file has `AmiId` (or `ExistingInstanceId`) + `AdAdminPassword` + `SecurityGroupId`: proceed to Step 2. The `AdDcProvisionerFixture` handles the rest.
 
-Minimum required when ProvisionAdDc is true:
-- `TestInfrastructure:AmiId` — OR `TestInfrastructure:ExistingInstanceId` (to reuse a stopped instance)
-- `TestInfrastructure:AdAdminPassword`
-- AWS credentials available in the environment (env vars, `~/.aws/credentials`, or IAM role)
+**First run / not configured**
+If neither Mode A nor Mode B is satisfied: stop. Tell the user:
+
+```
+No LDAP target configured.
+
+Quick start (recommended):
+  .\tools\setup-test-dc.ps1          # test mode
+  .\tools\setup-test-dc.ps1 -Mode demo  # demo mode
+
+Manual alternative: set LDAP__Host, LDAP__BaseDn, LDAP__ServiceAccountUser,
+LDAP__ServiceAccountPassword environment variables pointing at an existing DC.
+```
+
+Do not proceed until one of the two modes is satisfied.
 
 ### Step 2 — Build
 

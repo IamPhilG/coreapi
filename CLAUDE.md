@@ -52,8 +52,7 @@ Core AD DS gateway for the Ouritres org. Higher-level topic APIs (user managemen
 **Local LDAP test target:** Two options:
 
 - **Option A (manual):** Set `LDAP__Host`, `LDAP__BaseDn`, `LDAP__ServiceAccountUser`, `LDAP__ServiceAccountPassword` env vars pointing at any live DC (Windows Server eval or Samba AD container).
-- **Option B (auto-provisioned EC2):** Copy `tests/CoreApi.IntegrationTests/appsettings.Development.template.json` → `appsettings.Development.json`, set `TestInfrastructure:ProvisionAdDc: true`, fill in `AmiId`, `SecurityGroupId`, `AdAdminPassword`. The `AdDcProvisionerFixture` launches a Windows Server EC2 instance, installs AD DS via UserData, waits for LDAP port 389, runs tests, then stops the instance. Subsequent runs reuse the stopped instance via `ExistingInstanceId`.
-  - **Demo sub-mode:** additionally set `KeepRunning: true` + `SeedDemoData: true`. The fixture seeds demo AD objects (OUs, users, groups, service account) via LDAP, then leaves the instance running after tests so the coreapi app can point at it for a live demo.
+- **Option B (auto-provisioned EC2):** Run `tools\setup-test-dc.ps1` — interactive wizard that creates the AWS Security Group, finds the latest Windows Server 2022 AMI, optionally allocates an Elastic IP, and writes `tests/CoreApi.IntegrationTests/appsettings.Development.json` (gitignored). The `AdDcProvisionerFixture` then handles launch/start/stop automatically on each test run. Pass `-Mode demo` to the wizard for demo mode (instance stays running, AD seeded with demo objects). The wizard is idempotent and safe to re-run.
 
 `tests/**/appsettings.Development.json` is gitignored — never commit it.
 
@@ -112,6 +111,16 @@ A test in `IntegrationTests/` without the `Integration` trait is a configuration
 ## Specs
 
 Each spec is a self-contained unit of work. Implement them in order; later specs build on earlier ones.
+
+### Spec 0 — Developer tooling (non-numbered, parallel track)
+
+`tools/setup-test-dc.ps1` — interactive wizard that provisions the AWS EC2 Windows Server DC used for integration tests and demos. Not a numbered spec because it has no LDAP wire-protocol code and is not part of the API surface. Maintained alongside the numbered specs.
+
+Deliverables already complete:
+
+- `tools/setup-test-dc.ps1`: AWS CLI wizard (SG, AMI, Elastic IP, config write)
+- `AdDcProvisionerFixture`: xUnit `IAsyncLifetime` with test + demo modes
+- `appsettings.Development.template.json`: committed template for local config
 
 ### Spec 1 — Project scaffold
 

@@ -61,58 +61,39 @@ dotnet test --filter "Category=Integration"
 
 #### Option B — Auto-provisioned EC2 Windows Server DC
 
-The test suite can launch (or restart) an EC2 Windows Server instance, install AD DS via UserData, and tear down (stop) the instance automatically at the end of the test run.
+Run the setup wizard once — it handles everything interactively:
 
-**Setup (one time):**
-
-1. Copy the template and fill in your values:
-
-   ```bash
-   cp tests/CoreApi.IntegrationTests/appsettings.Development.template.json \
-      tests/CoreApi.IntegrationTests/appsettings.Development.json
-   ```
-
-2. Edit the copy — set `ProvisionAdDc: true` and supply at minimum:
-
-   | Key | Description |
-   | --- | --- |
-   | `AwsRegion` | Region where the instance will run |
-   | `AmiId` | Windows Server 2022 Base AMI ID for that region |
-   | `SecurityGroupId` | SG with inbound TCP 389/636 open to your dev IP |
-   | `AdAdminPassword` | Must satisfy Windows Server complexity rules |
-
-3. Ensure AWS credentials are available (environment variables, `~/.aws/credentials`, or IAM role).
-
-4. Run integration tests — the fixture handles the rest:
-
-   ```bash
-   dotnet test --filter "Category=Integration"
-   ```
-
-5. **After the first run:** copy the `ExistingInstanceId` printed in the test output into your `appsettings.Development.json`. Subsequent runs start the stopped instance (~2 min) instead of launching a new one (~15 min).
-
-> **Elastic IP:** Allocate one in the AWS console and set `ElasticIpAllocationId` so the instance always gets the same IP address. Without it, the IP changes on every start/stop cycle.
->
-> **Cost:** A `t3.medium` Windows instance costs ~$0.075/hr while running. The fixture stops (not terminates) the instance after each test run — you pay only for EBS storage (pennies/month) between runs.
->
-> **appsettings.Development.json is gitignored** — it contains credentials and is never committed.
-
-#### Demo mode — keep the DC running for a live demo
-
-Set two extra flags in `appsettings.Development.json`:
-
-```json
-{
-  "TestInfrastructure": {
-    "ProvisionAdDc": true,
-    "KeepRunning": true,
-    "SeedDemoData": true,
-    ...
-  }
-}
+```powershell
+.\tools\setup-test-dc.ps1
 ```
 
-| Flag | Effect |
+The wizard will:
+
+1. Validate your AWS CLI credentials
+2. Ask for region, instance type, domain name, and AD administrator password
+3. Optionally allocate an Elastic IP (recommended — keeps the same address across restarts)
+4. Find the latest Windows Server 2022 Base AMI in your region
+5. Create a Security Group `coreapi-test-dc` with inbound TCP 389 / 636 / 3389 from your current IP
+6. Ask for the run mode: **test** or **demo** (see below)
+7. Write `tests/CoreApi.IntegrationTests/appsettings.Development.json` (gitignored)
+8. Optionally run the integration tests immediately
+
+The wizard is idempotent — re-running it reuses existing AWS resources and preserves the `ExistingInstanceId` written after the first test run.
+
+**First run:** ~12–15 min (Windows boot + AD DS promotion + reboot).
+**Later runs:** ~2–3 min (restart the stopped instance).
+
+> **Cost:** A `t3.medium` Windows instance costs ~$0.075/hr while running. In test mode the fixture stops (not terminates) the instance after each run — you pay only for EBS storage (pennies/month) between runs.
+
+#### Demo mode
+
+Pass `-Mode demo` to the wizard (or choose `demo` when prompted):
+
+```powershell
+.\tools\setup-test-dc.ps1 -Mode demo
+```
+
+| Flag set by demo mode | Effect |
 | --- | --- |
 | `KeepRunning: true` | Fixture skips `StopInstances` on teardown — DC stays up after tests |
 | `SeedDemoData: true` | Populates AD with realistic objects before tests run (idempotent) |
@@ -126,9 +107,9 @@ Set two extra flags in `appsettings.Development.json`:
 | Groups | `IT-Admins`, `Dev-Team` (global security) |
 | Service account | `svc-coreapi` |
 
-> **Note on user state:** Users are created disabled because setting a password over plain LDAP (port 389) is forbidden by AD. Enabling accounts requires LDAPS (port 636). For a demo of the CRUD API surface, disabled accounts are sufficient — they are fully visible in directory searches and attribute reads.
+After the test run the fixture prints the DC host and base DN. Point the coreapi app at that DC by updating `src/CoreApi/appsettings.Development.json`, then run `dotnet run --project src/CoreApi` and open Swagger UI.
 
-**After the test run**, the fixture prints the host and base DN to console. Point the coreapi app at that DC by setting the `DirectoryConnection` block in `appsettings.Development.json` of the main project, then run `dotnet run --project src/CoreApi` and open Swagger UI.
+> **Note:** Users are created disabled — enabling them requires LDAPS (port 636) to set a password. For a demo of the CRUD API surface, disabled accounts are sufficient.
 
 ## Folder layout
 
