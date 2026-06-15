@@ -1,10 +1,13 @@
+using System.Diagnostics;
 using System.DirectoryServices.Protocols;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using Amazon;
 using Amazon.EC2;
 using Amazon.EC2.Model;
+using Amazon.Runtime;
 using Microsoft.Extensions.Configuration;
 
 namespace CoreApi.IntegrationTests.TestInfrastructure;
@@ -140,14 +143,47 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
     {
         var region = RegionEndpoint.GetBySystemName(_options.AwsRegion);
 
-        if (!string.IsNullOrEmpty(_options.AwsProfile))
-        {
-            // AWS_PROFILE is honoured by the SDK default credential chain and avoids
-            // pulling in AWSSDK.Signin (required by CredentialProfileStoreChain for SSO profiles).
-            Environment.SetEnvironmentVariable("AWS_PROFILE", _options.AwsProfile);
-        }
+        if (string.IsNullOrEmpty(_options.AwsProfile))
+            return new AmazonEC2Client(region);
 
-        return new AmazonEC2Client(region);
+        // Use the AWS CLI to resolve credentials for the named profile.
+        // This works for all profile types (access key, SSO, assume-role) without
+        // requiring AWSSDK.Signin or other optional SDK packages that SDK v4 demands
+        // at runtime for SSO profile resolution.
+        var creds = ExportCliCredentials(_options.AwsProfile);
+        return new AmazonEC2Client(creds, region);
+    }
+
+    private static AWSCredentials ExportCliCredentials(string profile)
+    {
+        var psi = new ProcessStartInfo("aws",
+            $"configure export-credentials --profile {profile} --format json")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true,
+            UseShellExecute        = false
+        };
+
+        using var proc = Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start aws CLI process.");
+
+        string stdout = proc.StandardOutput.ReadToEnd();
+        string stderr = proc.StandardError.ReadToEnd();
+        proc.WaitForExit();
+
+        if (proc.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"Failed to export credentials for profile '{profile}'. " +
+                $"Run: aws sso login --profile {profile}\n{stderr}");
+
+        var doc = JsonDocument.Parse(stdout).RootElement;
+        string accessKey  = doc.GetProperty("AccessKeyId").GetString()!;
+        string secretKey  = doc.GetProperty("SecretAccessKey").GetString()!;
+        string? token     = doc.TryGetProperty("SessionToken", out var t) ? t.GetString() : null;
+
+        return string.IsNullOrEmpty(token)
+            ? new BasicAWSCredentials(accessKey, secretKey)
+            : new SessionAWSCredentials(accessKey, secretKey, token);
     }
 
     // ── Validation ──────────────────────────────────────────────────────────
