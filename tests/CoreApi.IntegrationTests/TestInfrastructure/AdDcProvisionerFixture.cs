@@ -183,6 +183,18 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             throw new InvalidOperationException(
                 "TestInfrastructure:AdAdminPassword is required.");
 
+        // Check if an instance with the Elastic IP is already running (idempotent).
+        if (!string.IsNullOrEmpty(_options.ElasticIpAllocationId))
+        {
+            string? existingId = await TryGetInstanceIdForElasticIpAsync(_options.ElasticIpAllocationId);
+            if (existingId is not null)
+            {
+                Console.WriteLine(
+                    $"[AdDcProvisioner] Instance {existingId} already has Elastic IP {_options.ElasticIpAllocationId}. Reusing.");
+                return existingId;
+            }
+        }
+
         string userDataBase64 = Convert.ToBase64String(
             Encoding.UTF8.GetBytes(BuildUserDataScript()));
 
@@ -215,6 +227,23 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         return instanceId;
     }
 
+    private async Task<string?> TryGetInstanceIdForElasticIpAsync(string allocationId)
+    {
+        try
+        {
+            string instanceId = await QueryAwsAsync(
+                "Addresses[0].InstanceId",
+                "ec2", "describe-addresses",
+                "--allocation-ids", allocationId,
+                "--region", _options.AwsRegion);
+            return string.IsNullOrEmpty(instanceId) || instanceId == "None" ? null : instanceId;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private string BuildUserDataScript() => $"""
         <powershell>
         $ErrorActionPreference = 'Stop'
@@ -238,12 +267,49 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             string state = await QueryAwsAsync("Reservations[0].Instances[0].State.Name",
                 "ec2", "describe-instances", "--instance-ids", instanceId,
                 "--region", _options.AwsRegion);
-            if (state == targetState) return;
+            if (state == targetState)
+            {
+                // State is running, but wait for both status checks to pass before returning.
+                // Instance can be "running" but still "initializing" on status checks.
+                await WaitForInstanceStatusChecksAsync(instanceId);
+                return;
+            }
             try { await Task.Delay(TimeSpan.FromSeconds(10), cts.Token); }
             catch (OperationCanceledException)
             {
                 throw new TimeoutException(
                     $"Instance {instanceId} did not reach state '{targetState}' within 10 minutes.");
+            }
+        }
+    }
+
+    private async Task WaitForInstanceStatusChecksAsync(string instanceId)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        while (!cts.Token.IsCancellationRequested)
+        {
+            string systemStatus = await QueryAwsAsync(
+                "InstanceStatuses[0].SystemStatus.Status",
+                "ec2", "describe-instance-status", "--instance-ids", instanceId,
+                "--include-all-instances", "--region", _options.AwsRegion);
+
+            string instanceStatus = await QueryAwsAsync(
+                "InstanceStatuses[0].InstanceStatus.Status",
+                "ec2", "describe-instance-status", "--instance-ids", instanceId,
+                "--include-all-instances", "--region", _options.AwsRegion);
+
+            if (systemStatus == "ok" && instanceStatus == "ok")
+            {
+                Console.WriteLine($"[AdDcProvisioner] Instance {instanceId} status checks passed (ok/ok).");
+                return;
+            }
+
+            try { await Task.Delay(TimeSpan.FromSeconds(10), cts.Token); }
+            catch (OperationCanceledException)
+            {
+                throw new TimeoutException(
+                    $"Instance {instanceId} status checks did not pass within 10 minutes. " +
+                    $"System: {systemStatus}, Instance: {instanceStatus}");
             }
         }
     }
