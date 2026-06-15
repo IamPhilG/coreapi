@@ -186,6 +186,57 @@ function New-ElasticIp([string]$Region) {
     $raw -join "" | ConvertFrom-Json
 }
 
+function Get-OrCreateIamRole {
+    $roleName = "coreapi-test-dc-instance-role"
+    Write-Info "Checking for IAM role: $roleName"
+
+    $existing = & aws iam get-role --role-name $roleName --output json 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "IAM role already exists: $roleName"
+        return $roleName
+    }
+
+    Write-Info "Creating IAM role with SSM permissions..."
+    $trustPolicy = @{
+        Version = "2012-10-17"
+        Statement = @(
+            @{
+                Effect = "Allow"
+                Principal = @{ Service = "ec2.amazonaws.com" }
+                Action = "sts:AssumeRole"
+            }
+        )
+    } | ConvertTo-Json -Depth 3
+
+    $raw = & aws iam create-role --role-name $roleName --assume-role-policy-document $trustPolicy --output json 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Failed to create role: $raw" }
+
+    Write-Info "Attaching AmazonSSMManagedInstanceCore policy..."
+    & aws iam attach-role-policy --role-name $roleName --policy-arn "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" 2>&1 | Out-Null
+
+    Write-Ok "IAM role created and configured: $roleName"
+    $roleName
+}
+
+function Get-OrCreateInstanceProfile {
+    param([string]$RoleName)
+    $profileName = "coreapi-test-dc-instance-profile"
+    Write-Info "Checking for instance profile: $profileName"
+
+    $existing = & aws iam get-instance-profile --instance-profile-name $profileName --output json 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "Instance profile already exists: $profileName"
+        return $profileName
+    }
+
+    Write-Info "Creating instance profile..."
+    & aws iam create-instance-profile --instance-profile-name $profileName --output json 2>&1 | Out-Null
+    & aws iam add-role-to-instance-profile --instance-profile-name $profileName --role-name $RoleName 2>&1 | Out-Null
+
+    Write-Ok "Instance profile created: $profileName"
+    $profileName
+}
+
 $prevConfig         = $null
 $existingInstanceId = ""
 $existingEipAllocId = ""
@@ -284,7 +335,12 @@ $KeepRunning  = ($Mode -eq "demo")
 $SeedDemoData = ($Mode -eq "demo")
 Write-Ok "Mode: $Mode (KeepRunning=$KeepRunning, SeedDemoData=$SeedDemoData)"
 
-Write-Step 8 10 "EC2 Key Pair for RDP access"
+Write-Step 8 11 "IAM Role for SSM and RDP access"
+Write-Info "Enables Systems Manager Session Manager and EC2 Instance Connect."
+$IamRole = Get-OrCreateIamRole
+$IamInstanceProfile = Get-OrCreateInstanceProfile $IamRole
+
+Write-Step 9 11 "EC2 Key Pair for RDP access"
 Write-Info "Used to RDP into the instance for troubleshooting."
 $KeyPairName = "coreapi-test-dc-$Region"
 $keyDir = Join-Path $RepoRoot ".ssh"
@@ -310,7 +366,7 @@ if (Test-Path $keyPath) {
     }
 }
 
-Write-Step 9 10 "Provisioning AWS resources"
+Write-Step 10 11 "Provisioning AWS resources"
 
 Write-Info "Finding latest Windows Server 2022 AMI in $Region..."
 $AmiId = Get-LatestWin2022Ami $Region
@@ -340,6 +396,7 @@ $config = [ordered]@{
         KeyPairName             = $KeyPairName
         ElasticIpAllocationId   = $EipAllocationId
         ExistingInstanceId      = $existingInstanceId
+        IamInstanceProfile      = $IamInstanceProfile
         DomainName              = $DomainName
         DomainNetbiosName       = $DomainNetbios
         AdAdminPassword         = $AdAdminPassword
@@ -373,7 +430,7 @@ Write-Host "  mstsc /v:$Region-test-dc.your-domain.com (after IP is fixed by DNS
 Write-Host "  or use the Elastic IP from EC2 console" -ForegroundColor White
 Write-Host ""
 
-Write-Step 10 10 "Run integration tests"
+Write-Step 11 11 "Run integration tests"
 if (Read-YesNo "Run integration tests now?" $true) {
     Push-Location $RepoRoot
     try {

@@ -24,6 +24,12 @@ public sealed class AdDcProvisionerOptions
     /// </summary>
     public string ExistingInstanceId { get; init; } = string.Empty;
 
+    /// <summary>
+    /// IAM instance profile name to attach to launched instances.
+    /// Provides permissions for Systems Manager Session Manager and EC2 Instance Connect.
+    /// </summary>
+    public string IamInstanceProfile { get; init; } = string.Empty;
+
     public string DomainName { get; init; } = "corp.local";
     public string DomainNetbiosName { get; init; } = "CORP";
 
