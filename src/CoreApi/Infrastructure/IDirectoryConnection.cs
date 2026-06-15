@@ -6,6 +6,8 @@ public interface IDirectoryConnection
 {
     /// <summary>
     /// Executes a paged LDAP search and returns all matching entries.
+    /// Filter values derived from user input MUST be escaped via <see cref="LdapFilterEncoder.Escape"/>
+    /// before being composed into the filter string.
     /// </summary>
     Task<IReadOnlyList<SearchResultEntry>> SearchAsync(
         string baseDn,
@@ -29,5 +31,12 @@ public interface IDirectoryConnection
         string distinguishedName,
         string? newParentDn,
         string newName,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Sends an LDAP Extended Operation (e.g. Password Modify, RFC 3062).
+    /// </summary>
+    Task<ExtendedResponse> SendExtendedAsync(
+        ExtendedRequest request,
         CancellationToken cancellationToken = default);
 }

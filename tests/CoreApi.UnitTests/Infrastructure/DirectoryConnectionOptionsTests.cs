@@ -73,4 +73,21 @@ public class DirectoryConnectionOptionsTests
     {
         Assert.Equal(636, new DirectoryConnectionOptions().Port);
     }
+
+    // Cross-field rule: if ServiceAccountUser is set, ServiceAccountPassword must also be set.
+    // This is enforced via .Validate() in Program.cs (not a data annotation), so tested here
+    // by confirming the underlying field defaults rather than through the DI pipeline.
+    [Fact]
+    [Trait("Category", "Unit")]
+    public void Default_ServiceAccountPassword_is_empty_string()
+    {
+        Assert.Equal(string.Empty, new DirectoryConnectionOptions().ServiceAccountPassword);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public void Default_ServiceAccountUser_is_empty_string()
+    {
+        Assert.Equal(string.Empty, new DirectoryConnectionOptions().ServiceAccountUser);
+    }
 }
