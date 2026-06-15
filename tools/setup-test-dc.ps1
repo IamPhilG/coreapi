@@ -218,7 +218,10 @@ function Get-OrCreateIamRole {
         $fileContent = Get-Content -Path $tempFile -Raw
         Write-Debug "File content: $fileContent"
 
-        Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", "file://$tempFile", "--output", "json") | Out-Null
+        $tempFileFormatted = $tempFile -replace '\\', '/'
+        Write-Debug "File path for AWS CLI: file://$tempFileFormatted"
+
+        Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", "file://$tempFileFormatted", "--output", "json") | Out-Null
     } finally {
         Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
     }
