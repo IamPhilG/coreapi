@@ -84,7 +84,10 @@ function Write-Warn([string]$text) { Write-Host "  $text" -ForegroundColor Yello
 function Invoke-Aws {
     param([string[]]$Arguments, [switch]$AllowFailure)
     $cmdArgs = $Arguments + @("--profile", $AwsProfile)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     $output = & aws @cmdArgs 2>&1
+    $ErrorActionPreference = $prev
     if ($LASTEXITCODE -eq 0) { return $output }
     if ($AllowFailure) { return $null }
     throw "AWS CLI error (exit $LASTEXITCODE): $($output -join ' ')"
@@ -92,7 +95,10 @@ function Invoke-Aws {
 
 function Assert-AwsSession {
     Write-Info "Checking AWS session for profile '$AwsProfile'..."
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     $output = & aws sts get-caller-identity --profile $AwsProfile --output json 2>&1
+    $ErrorActionPreference = $prev
     if ($LASTEXITCODE -eq 0) {
         $id = $output | ConvertFrom-Json
         Write-Ok "Account : $($id.Account)"
@@ -101,9 +107,13 @@ function Assert-AwsSession {
     }
     Write-Warn "Session expired or not found for profile '$AwsProfile'."
     Write-Info "Attempting: aws sso login --profile $AwsProfile"
+    $ErrorActionPreference = "Continue"
     & aws sso login --profile $AwsProfile
+    $ErrorActionPreference = $prev
     if ($LASTEXITCODE -eq 0) {
-        $output = & aws sts get-caller-identity --profile $AwsProfile --output json
+        $ErrorActionPreference = "Continue"
+        $output = & aws sts get-caller-identity --profile $AwsProfile --output json 2>&1
+        $ErrorActionPreference = $prev
         if ($LASTEXITCODE -eq 0) {
             $id = $output | ConvertFrom-Json
             Write-Ok "Re-authenticated. Account: $($id.Account)"
@@ -208,7 +218,7 @@ function Get-OrCreateIamRole {
         )
     } | ConvertTo-Json -Depth 3
 
-    $raw = Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", $trustPolicy, "--output", "json")
+    Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", $trustPolicy, "--output", "json") | Out-Null
 
     Write-Info "Attaching AmazonSSMManagedInstanceCore policy..."
     Invoke-Aws @("iam", "attach-role-policy", "--role-name", $roleName, "--policy-arn", "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore") | Out-Null
@@ -330,7 +340,9 @@ if ($existingInstanceId) {
     Write-Info "Previous instance: $existingInstanceId"
     if (Read-YesNo "Terminate and launch fresh instance?" $true) {
         Write-Info "Terminating $existingInstanceId..."
-        & aws ec2 terminate-instances --instance-ids $existingInstanceId --region $Region --profile $AwsProfile --output json | Out-Null
+        $ErrorActionPreference = "Continue"
+        & aws ec2 terminate-instances --instance-ids $existingInstanceId --region $Region --profile $AwsProfile --output json 2>&1 | Out-Null
+        $ErrorActionPreference = "Stop"
         Write-Ok "Instance termination initiated."
         $existingInstanceId = ""
     } else {
@@ -371,7 +383,9 @@ if (Test-Path $keyPath) {
     Write-Info "Creating new key pair: $KeyPairName"
     if (-not (Test-Path $keyDir)) { New-Item -ItemType Directory -Path $keyDir -Force | Out-Null }
 
+    $ErrorActionPreference = "Continue"
     $raw = & aws ec2 create-key-pair --key-name $KeyPairName --region $Region --profile $AwsProfile --query 'KeyMaterial' --output text 2>&1
+    $ErrorActionPreference = "Stop"
     if ($LASTEXITCODE -eq 0) {
         $raw | Set-Content $keyPath -Encoding utf8
         icacls $keyPath /inheritance:r /grant:r "$env:USERNAME`:F" | Out-Null
@@ -429,7 +443,9 @@ $config | ConvertTo-Json -Depth 3 | Set-Content $ConfigPath -Encoding utf8
 Write-Ok "Written: $ConfigPath"
 
 Write-Banner "Setup complete"
-$account = & aws sts get-caller-identity --profile $AwsProfile --query Account --output text
+$ErrorActionPreference = "Continue"
+$account = & aws sts get-caller-identity --profile $AwsProfile --query Account --output text 2>&1
+$ErrorActionPreference = "Stop"
 Write-Host "  Profile       : $AwsProfile" -ForegroundColor White
 Write-Host "  Account       : $account" -ForegroundColor White
 Write-Host "  Region        : $Region" -ForegroundColor White
