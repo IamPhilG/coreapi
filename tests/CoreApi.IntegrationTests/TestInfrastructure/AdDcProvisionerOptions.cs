@@ -29,4 +29,19 @@ public sealed class AdDcProvisionerOptions
 
     /// <summary>Seconds to wait for LDAP port 389 to open after the instance starts. Default 900 (15 min).</summary>
     public int LdapReadyTimeoutSeconds { get; init; } = 900;
+
+    /// <summary>
+    /// When true, the fixture skips the StopInstances call on teardown so the DC stays running
+    /// after the test run. Use for demo environments. Default false (stop on teardown).
+    /// </summary>
+    public bool KeepRunning { get; init; }
+
+    /// <summary>
+    /// When true, seeds the AD directory with realistic demo objects (OUs, users, groups, a
+    /// service account) after the DC is ready. Idempotent — safe to run against an already-seeded
+    /// DC because existing objects are silently skipped.
+    /// Users are created in a disabled state; enabling them requires LDAPS (port 636) to set
+    /// unicodePwd, which is outside the scope of this dev fixture.
+    /// </summary>
+    public bool SeedDemoData { get; init; }
 }

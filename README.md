@@ -97,6 +97,39 @@ The test suite can launch (or restart) an EC2 Windows Server instance, install A
 >
 > **appsettings.Development.json is gitignored** — it contains credentials and is never committed.
 
+#### Demo mode — keep the DC running for a live demo
+
+Set two extra flags in `appsettings.Development.json`:
+
+```json
+{
+  "TestInfrastructure": {
+    "ProvisionAdDc": true,
+    "KeepRunning": true,
+    "SeedDemoData": true,
+    ...
+  }
+}
+```
+
+| Flag | Effect |
+| --- | --- |
+| `KeepRunning: true` | Fixture skips `StopInstances` on teardown — DC stays up after tests |
+| `SeedDemoData: true` | Populates AD with realistic objects before tests run (idempotent) |
+
+**Demo objects seeded automatically:**
+
+| Type | Objects |
+| --- | --- |
+| OUs | `Users`, `ServiceAccounts`, `Groups` |
+| Users | `alice.martin`, `bob.dupont`, `claire.bernard` |
+| Groups | `IT-Admins`, `Dev-Team` (global security) |
+| Service account | `svc-coreapi` |
+
+> **Note on user state:** Users are created disabled because setting a password over plain LDAP (port 389) is forbidden by AD. Enabling accounts requires LDAPS (port 636). For a demo of the CRUD API surface, disabled accounts are sufficient — they are fully visible in directory searches and attribute reads.
+
+**After the test run**, the fixture prints the host and base DN to console. Point the coreapi app at that DC by setting the `DirectoryConnection` block in `appsettings.Development.json` of the main project, then run `dotnet run --project src/CoreApi` and open Swagger UI.
+
 ## Folder layout
 
 ```text

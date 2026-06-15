@@ -1,3 +1,5 @@
+using System.DirectoryServices.Protocols;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using Amazon;
@@ -9,13 +11,22 @@ namespace CoreApi.IntegrationTests.TestInfrastructure;
 
 /// <summary>
 /// xUnit collection fixture that optionally provisions an EC2 Windows Server AD DS instance
-/// before integration tests run and stops it on teardown.
+/// before integration tests run.
 ///
-/// When TestInfrastructure:ProvisionAdDc is false (the default), no AWS calls are made and
-/// the resolved connection parameters fall through to LDAP__* environment variables, exactly
-/// as the tests worked before this fixture existed.
+/// Modes
+/// -----
+/// Test mode  (KeepRunning=false, SeedDemoData=false) — default
+///   Starts the DC, runs tests, stops the instance on teardown.
 ///
-/// Configuration sources (env vars take precedence):
+/// Demo mode  (KeepRunning=true, SeedDemoData=true)
+///   Starts the DC, seeds demo AD objects (OUs, users, groups, service account),
+///   runs tests, then LEAVES the instance running so the coreapi app can be pointed
+///   at it for a live demo.
+///
+/// When ProvisionAdDc=false (the default), no AWS calls are made and connection
+/// parameters fall through to LDAP__* environment variables.
+///
+/// Configuration sources (env vars take precedence over the file):
 ///   File : tests/CoreApi.IntegrationTests/appsettings.Development.json  (gitignored)
 ///   Env  : TESTINFRA__* (e.g. TESTINFRA__ProvisionAdDc=true)
 /// </summary>
@@ -64,7 +75,7 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             _launchedInstanceId = instanceId;
             Console.WriteLine(
                 $"[AdDcProvisioner] New instance launched: {instanceId}. " +
-                $"Add this as TestInfrastructure:ExistingInstanceId to reuse it on subsequent runs.");
+                "Add this as TestInfrastructure:ExistingInstanceId to reuse it on subsequent runs.");
         }
 
         string publicIp = await WaitForPublicIpAsync(instanceId);
@@ -83,12 +94,24 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         ResolvedUseTls = false;
         ResolvedServiceAccountUser = $"Administrator@{_options.DomainName}";
         ResolvedServiceAccountPassword = _options.AdAdminPassword;
+
+        if (_options.SeedDemoData)
+            await Task.Run(SeedDemoData);
     }
 
     public async Task DisposeAsync()
     {
         if (_ec2 is null)
             return;
+
+        if (_options.KeepRunning)
+        {
+            Console.WriteLine(
+                $"[AdDcProvisioner] KeepRunning=true — instance left running. " +
+                $"Point coreapi at {ResolvedHost} (BaseDn: {ResolvedBaseDn}).");
+            _ec2.Dispose();
+            return;
+        }
 
         string? toStop = _launchedInstanceId
             ?? (_options.ProvisionAdDc && !string.IsNullOrEmpty(_options.ExistingInstanceId)
@@ -105,6 +128,109 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
 
         _ec2.Dispose();
     }
+
+    // ── Seed ────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Creates a minimal but realistic AD structure for demos and manual testing.
+    /// Safe to call against an already-seeded DC — existing objects are silently skipped.
+    ///
+    /// Objects created:
+    ///   OUs   : Users, ServiceAccounts, Groups
+    ///   Users : alice.martin, bob.dupont, claire.bernard  (disabled — no password set over plain LDAP)
+    ///   Groups: IT-Admins, Dev-Team  (global security)
+    ///   SA    : svc-coreapi  (disabled)
+    /// </summary>
+    private void SeedDemoData()
+    {
+        // Extra wait: LDAP port opens slightly before the directory is fully ready to accept writes.
+        Thread.Sleep(TimeSpan.FromSeconds(10));
+
+        var identifier = new LdapDirectoryIdentifier(ResolvedHost, ResolvedPort);
+        using var conn = new LdapConnection(identifier);
+        conn.Credential = new NetworkCredential(ResolvedServiceAccountUser, ResolvedServiceAccountPassword);
+        conn.AuthType = AuthType.Basic;
+        conn.SessionOptions.ProtocolVersion = 3;
+        conn.Bind();
+
+        string dn = ResolvedBaseDn;
+
+        AddOu(conn, "Users", dn);
+        AddOu(conn, "ServiceAccounts", dn);
+        AddOu(conn, "Groups", dn);
+
+        AddUser(conn, "alice.martin",    "Alice",   "Martin",   $"OU=Users,{dn}");
+        AddUser(conn, "bob.dupont",      "Bob",     "Dupont",   $"OU=Users,{dn}");
+        AddUser(conn, "claire.bernard",  "Claire",  "Bernard",  $"OU=Users,{dn}");
+
+        AddGroup(conn, "IT-Admins", $"OU=Groups,{dn}");
+        AddGroup(conn, "Dev-Team",  $"OU=Groups,{dn}");
+
+        AddUser(conn, "svc-coreapi", "CoreApi", "Service", $"OU=ServiceAccounts,{dn}");
+
+        Console.WriteLine("[AdDcProvisioner] Demo data seeded successfully.");
+    }
+
+    private static void AddOu(LdapConnection conn, string ouName, string parentDn)
+    {
+        string dn = $"OU={ouName},{parentDn}";
+        var req = new AddRequest(dn, new DirectoryAttribute[]
+        {
+            new("objectClass", "organizationalUnit"),
+            new("ou", ouName)
+        });
+        SendIgnoringAlreadyExists(conn, req);
+    }
+
+    private static void AddUser(LdapConnection conn, string samAccount, string givenName,
+        string surname, string parentDn)
+    {
+        string cn = $"{givenName} {surname}";
+        string dn = $"CN={cn},{parentDn}";
+        string domain = ExtractDomain(parentDn);
+
+        var req = new AddRequest(dn, new DirectoryAttribute[]
+        {
+            new("objectClass", "user"),
+            new("sAMAccountName", samAccount),
+            new("userPrincipalName", $"{samAccount}@{domain}"),
+            new("givenName", givenName),
+            new("sn", surname),
+            new("displayName", cn),
+            new("userAccountControl", "514")  // disabled — unicodePwd requires LDAPS
+        });
+        SendIgnoringAlreadyExists(conn, req);
+    }
+
+    private static void AddGroup(LdapConnection conn, string groupName, string parentDn)
+    {
+        string dn = $"CN={groupName},{parentDn}";
+        var req = new AddRequest(dn, new DirectoryAttribute[]
+        {
+            new("objectClass", "group"),
+            new("sAMAccountName", groupName),
+            new("groupType", "-2147483646")  // global security group
+        });
+        SendIgnoringAlreadyExists(conn, req);
+    }
+
+    private static void SendIgnoringAlreadyExists(LdapConnection conn, DirectoryRequest req)
+    {
+        try { conn.SendRequest(req); }
+        catch (DirectoryOperationException ex)
+            when (ex.Response?.ResultCode == ResultCode.EntryAlreadyExists) { }
+    }
+
+    private static string ExtractDomain(string dn)
+    {
+        // "OU=Users,DC=corp,DC=local" → "corp.local"
+        var parts = dn.Split(',')
+            .Where(p => p.StartsWith("DC=", StringComparison.OrdinalIgnoreCase))
+            .Select(p => p[3..]);
+        return string.Join(".", parts);
+    }
+
+    // ── EC2 helpers ─────────────────────────────────────────────────────────
 
     private static AdDcProvisionerOptions LoadOptions()
     {

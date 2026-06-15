@@ -53,6 +53,7 @@ Core AD DS gateway for the Ouritres org. Higher-level topic APIs (user managemen
 
 - **Option A (manual):** Set `LDAP__Host`, `LDAP__BaseDn`, `LDAP__ServiceAccountUser`, `LDAP__ServiceAccountPassword` env vars pointing at any live DC (Windows Server eval or Samba AD container).
 - **Option B (auto-provisioned EC2):** Copy `tests/CoreApi.IntegrationTests/appsettings.Development.template.json` → `appsettings.Development.json`, set `TestInfrastructure:ProvisionAdDc: true`, fill in `AmiId`, `SecurityGroupId`, `AdAdminPassword`. The `AdDcProvisionerFixture` launches a Windows Server EC2 instance, installs AD DS via UserData, waits for LDAP port 389, runs tests, then stops the instance. Subsequent runs reuse the stopped instance via `ExistingInstanceId`.
+  - **Demo sub-mode:** additionally set `KeepRunning: true` + `SeedDemoData: true`. The fixture seeds demo AD objects (OUs, users, groups, service account) via LDAP, then leaves the instance running after tests so the coreapi app can point at it for a live demo.
 
 `tests/**/appsettings.Development.json` is gitignored — never commit it.
 
@@ -113,20 +114,24 @@ A test in `IntegrationTests/` without the `Integration` trait is a configuration
 Each spec is a self-contained unit of work. Implement them in order; later specs build on earlier ones.
 
 ### Spec 1 — Project scaffold
+
 Empty ASP.NET Core Web API project, solution structure, folder conventions, `.gitignore`, `appsettings` skeleton (connection strings, JWT config placeholders).
 
 ### Spec 2 — AD DS connection layer
+
 `IDirectoryConnection` abstraction + implementation using `System.DirectoryServices.Protocols`.
 Config: host, port, base DN, service account credentials, TLS toggle.
 No business logic in this layer.
 
 ### Spec 3 — JWT authentication middleware
+
 Bearer token validation with configurable `Authority`, `Audience`, `Issuer` from `appsettings`.
 Fail-fast on startup if required config is missing. No AD involvement.
 
 Swagger contribution: add `AddSecurityDefinition("Bearer", ...)` + `AddSecurityRequirement(...)` to `AddSwaggerGen` so the Swagger UI shows an **Authorize** button. Every protected endpoint must show the padlock icon. Verify manually in Swagger UI that providing a valid token unlocks calls and an invalid token returns 401.
 
 ### Spec 4 — User CRUD
+
 Create / Read / Update / Delete AD **user** objects via the Spec 2 layer.
 Scope: standard user accounts only (not service accounts).
 No ACL operations yet.
@@ -134,6 +139,7 @@ No ACL operations yet.
 Swagger contribution: enable XML doc generation in `CoreApi.csproj` (`<GenerateDocumentationFile>true</GenerateDocumentationFile>`); wire doc file into `AddSwaggerGen`. Every controller method must have `/// <summary>`, `/// <param>`, and `/// <returns>`. Every action must declare `[ProducesResponseType]` for all returned HTTP status codes (200/201, 400, 401, 403, 404, 409, 503). Tag: `[ApiExplorerSettings(GroupName = "Users")]`.
 
 ### Spec 5 — Service account CRUD
+
 Create / Read / Update / Delete AD **service account** objects via the Spec 2 layer.
 Handled separately from users: different OU placement, naming conventions, and attribute sets.
 No ACL operations yet.
@@ -141,21 +147,25 @@ No ACL operations yet.
 Swagger contribution: same XML doc and `[ProducesResponseType]` rules as Spec 4. Tag: `[ApiExplorerSettings(GroupName = "ServiceAccounts")]`. Document the `servicePrincipalName` field explicitly — it is a multi-value attribute with a specific format (`ServiceClass/FQDN:Port`) that callers must follow.
 
 ### Spec 6 — Group & OU CRUD
+
 Create / Read / Update / Delete AD group and organizational unit objects via the Spec 2 layer.
 
 Swagger contribution: same XML doc and `[ProducesResponseType]` rules. Tags: `[ApiExplorerSettings(GroupName = "Groups")]` and `[ApiExplorerSettings(GroupName = "OUs")]`. Document the `groupType` field with all valid scope × type combinations. Document that OU delete with `force=false` fails if the OU is protected — callers must know to set `force=true` to remove the protection DENY ACE first.
 
 ### Spec 7 — ACL management
+
 Read and write DACLs on AD objects using `System.Security.AccessControl`.
 Applies to any object type (users, service accounts, groups, OUs).
 
 Swagger contribution: same XML doc and `[ProducesResponseType]` rules. Tag: `[ApiExplorerSettings(GroupName = "ACL")]`. Document the ACE model in `<remarks>` — rights enum values, ObjectType GUID meaning, inheritance flags. Include at least one request example showing a `Reset Password` extended right grant.
 
 ### Spec 8 — Business logic hooks
+
 Extensibility point for cross-cutting rules (e.g. "add user to default group on creation").
 Wired into the CRUD layers from Specs 4–6.
 
 ### Spec 9 — AWS deployment config
+
 `Dockerfile` + health check endpoint (`GET /health`).
 Note: Kerberos on Linux containers requires domain-join or keytab configuration — finalize once AWS deployment target (ECS / EKS / Beanstalk) is chosen.
 
