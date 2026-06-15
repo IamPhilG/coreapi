@@ -196,6 +196,7 @@ function Get-OrCreateIamRole {
         return $roleName
     }
 
+    # Role doesn't exist, create it
     Write-Info "Creating IAM role with SSM permissions..."
     $trustPolicy = @{
         Version = "2012-10-17"
@@ -229,6 +230,7 @@ function Get-OrCreateInstanceProfile {
         return $profileName
     }
 
+    # Profile doesn't exist, create it
     Write-Info "Creating instance profile..."
     & aws iam create-instance-profile --instance-profile-name $profileName --output json 2>&1 | Out-Null
     & aws iam add-role-to-instance-profile --instance-profile-name $profileName --role-name $RoleName 2>&1 | Out-Null
