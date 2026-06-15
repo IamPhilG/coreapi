@@ -287,8 +287,8 @@ Write-Ok "Mode: $Mode (KeepRunning=$KeepRunning, SeedDemoData=$SeedDemoData)"
 Write-Step 8 10 "EC2 Key Pair for RDP access"
 Write-Info "Used to RDP into the instance for troubleshooting."
 $KeyPairName = "coreapi-test-dc-$Region"
-$keyPath = Join-Path $env:USERPROFILE ".ssh\$KeyPairName.pem"
-$keyDir = Split-Path $keyPath
+$keyDir = Join-Path $RepoRoot ".ssh"
+$keyPath = Join-Path $keyDir "$KeyPairName.pem"
 
 if (Test-Path $keyPath) {
     Write-Ok "Key pair already exists locally: $keyPath"

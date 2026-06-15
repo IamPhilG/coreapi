@@ -489,3 +489,6 @@ $RECYCLE.BIN/
 
 # Test infrastructure settings — contain AWS credentials and AD passwords; never commit
 tests/**/appsettings.Development.json
+
+# EC2 key pairs for RDP access
+.ssh/
