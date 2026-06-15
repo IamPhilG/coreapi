@@ -1,0 +1,32 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "if": "Bash(git push *)",
+            "command": "$i = [Console]::In.ReadToEnd() | ConvertFrom-Json; $cmd = $i.tool_input.command; if ($cmd -match '\\bmain\\b|\\bmaster\\b') { Write-Output '{\"continue\": false, \"stopReason\": \"[HOOK] Pushing to main/master requires explicit user confirmation.\"}' } else { exit 0 }",
+            "statusMessage": "Checking push target branch..."
+          },
+          {
+            "type": "command",
+            "shell": "powershell",
+            "if": "Bash(git add *)",
+            "command": "$i = [Console]::In.ReadToEnd() | ConvertFrom-Json; $cmd = $i.tool_input.command; if ($cmd -match 'appsettings|\\.env|secrets|credentials|password|token') { Write-Output '{\"continue\": false, \"stopReason\": \"[HOOK] Blocked: staging a secrets-adjacent file requires explicit user approval.\"}' } else { exit 0 }",
+            "statusMessage": "Checking for secrets in staged files..."
+          },
+          {
+            "type": "command",
+            "shell": "powershell",
+            "if": "Bash(git *)",
+            "command": "$i = [Console]::In.ReadToEnd() | ConvertFrom-Json; $cmd = $i.tool_input.command; if ($cmd -match 'reset\\s+--hard|clean\\s+-f|checkout\\s+--') { Write-Output '{\"continue\": false, \"stopReason\": \"[HOOK] Destructive git operation requires explicit user confirmation.\"}' } else { exit 0 }",
+            "statusMessage": "Checking for destructive git operation..."
+          }
+        ]
+      }
+    ]
+  }
+}
