@@ -3,11 +3,6 @@ using System.DirectoryServices.Protocols;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using System.Text.Json;
-using Amazon;
-using Amazon.EC2;
-using Amazon.EC2.Model;
-using Amazon.Runtime;
 using Microsoft.Extensions.Configuration;
 
 namespace CoreApi.IntegrationTests.TestInfrastructure;
@@ -18,7 +13,7 @@ namespace CoreApi.IntegrationTests.TestInfrastructure;
 ///
 /// Modes
 /// -----
-/// Test mode  (KeepRunning=false, SeedDemoData=false) — default
+/// Test mode  (KeepRunning=false, SeedDemoData=false) -- default
 ///   Starts the DC, runs tests, stops the instance on teardown.
 ///
 /// Demo mode  (KeepRunning=true, SeedDemoData=true)
@@ -54,7 +49,6 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         Environment.GetEnvironmentVariable("LDAP__ServiceAccountPassword") ?? string.Empty;
 
     private AdDcProvisionerOptions _options = new();
-    private AmazonEC2Client? _ec2;
     private string? _launchedInstanceId;
 
     public async Task InitializeAsync()
@@ -68,8 +62,6 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         }
 
         ValidateRequiredOptions(_options);
-
-        _ec2 = CreateEc2Client();
 
         string instanceId;
         if (!string.IsNullOrEmpty(_options.ExistingInstanceId))
@@ -109,15 +101,14 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        if (_ec2 is null)
+        if (!_options.ProvisionAdDc)
             return;
 
         if (_options.KeepRunning)
         {
             Console.WriteLine(
-                $"[AdDcProvisioner] KeepRunning=true — instance left running. " +
+                $"[AdDcProvisioner] KeepRunning=true -- instance left running. " +
                 $"Point coreapi at {ResolvedHost} (BaseDn: {ResolvedBaseDn}).");
-            _ec2.Dispose();
             return;
         }
 
@@ -128,65 +119,168 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
 
         if (toStop is not null)
         {
-            await _ec2.StopInstancesAsync(new StopInstancesRequest
-            {
-                InstanceIds = [toStop]
-            });
+            await StopInstanceAsync(toStop);
         }
-
-        _ec2.Dispose();
     }
 
-    // ── EC2 client factory ───────────────────────────────────────────────────
+    // -- EC2 helpers via AWS CLI --
 
-    private AmazonEC2Client CreateEc2Client()
+    private async Task InvokeAwsAsync(params string[] args)
     {
-        var region = RegionEndpoint.GetBySystemName(_options.AwsRegion);
-
-        if (string.IsNullOrEmpty(_options.AwsProfile))
-            return new AmazonEC2Client(region);
-
-        // Use the AWS CLI to resolve credentials for the named profile.
-        // This works for all profile types (access key, SSO, assume-role) without
-        // requiring AWSSDK.Signin or other optional SDK packages that SDK v4 demands
-        // at runtime for SSO profile resolution.
-        var creds = ExportCliCredentials(_options.AwsProfile);
-        return new AmazonEC2Client(creds, region);
+        var profile = string.IsNullOrEmpty(_options.AwsProfile) ? "" : $" --profile {_options.AwsProfile}";
+        var cmdArgs = string.Join(" ", args.Select(a => a.Contains(" ") ? $"\"{a}\"" : a)) + profile;
+        var psi = new ProcessStartInfo("aws", cmdArgs)
+        {
+            RedirectStandardError = true,
+            UseShellExecute       = false
+        };
+        using var proc = Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start aws CLI.");
+        await proc.WaitForExitAsync();
+        if (proc.ExitCode != 0)
+        {
+            string err = proc.StandardError.ReadToEnd();
+            throw new InvalidOperationException($"AWS CLI error: {err}");
+        }
     }
 
-    private static AWSCredentials ExportCliCredentials(string profile)
+    private async Task<string> QueryAwsAsync(string query, params string[] args)
     {
-        var psi = new ProcessStartInfo("aws",
-            $"configure export-credentials --profile {profile} --format json")
+        var profile = string.IsNullOrEmpty(_options.AwsProfile) ? "" : $" --profile {_options.AwsProfile}";
+        var cmdArgs = string.Join(" ", args.Select(a => a.Contains(" ") ? $"\"{a}\"" : a)) +
+                      $" --query \"{query}\" --output text" + profile;
+        var psi = new ProcessStartInfo("aws", cmdArgs)
         {
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
             UseShellExecute        = false
         };
-
         using var proc = Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to start aws CLI process.");
-
+            ?? throw new InvalidOperationException("Failed to start aws CLI.");
         string stdout = proc.StandardOutput.ReadToEnd();
-        string stderr = proc.StandardError.ReadToEnd();
-        proc.WaitForExit();
-
+        await proc.WaitForExitAsync();
         if (proc.ExitCode != 0)
-            throw new InvalidOperationException(
-                $"Failed to export credentials for profile '{profile}'. " +
-                $"Run: aws sso login --profile {profile}\n{stderr}");
-
-        var doc = JsonDocument.Parse(stdout).RootElement;
-        string accessKey  = doc.GetProperty("AccessKeyId").GetString()!;
-        string secretKey  = doc.GetProperty("SecretAccessKey").GetString()!;
-        string? token     = doc.TryGetProperty("SessionToken", out var t) ? t.GetString() : null;
-
-        return string.IsNullOrEmpty(token)
-            ? new BasicAWSCredentials(accessKey, secretKey)
-            : new SessionAWSCredentials(accessKey, secretKey, token);
+        {
+            string err = proc.StandardError.ReadToEnd();
+            throw new InvalidOperationException($"AWS CLI error: {err}");
+        }
+        return stdout.Trim();
     }
 
-    // ── Validation ──────────────────────────────────────────────────────────
+    private async Task StartExistingInstanceAsync(string instanceId)
+    {
+        await InvokeAwsAsync("ec2", "start-instances", "--instance-ids", instanceId,
+            "--region", _options.AwsRegion);
+        await WaitForInstanceStateAsync(instanceId, "running");
+    }
+
+    private async Task<string> LaunchNewInstanceAsync()
+    {
+        if (string.IsNullOrEmpty(_options.AmiId))
+            throw new InvalidOperationException(
+                "TestInfrastructure:AmiId is required when ExistingInstanceId is not set.");
+        if (string.IsNullOrEmpty(_options.AdAdminPassword))
+            throw new InvalidOperationException(
+                "TestInfrastructure:AdAdminPassword is required.");
+
+        string userDataBase64 = Convert.ToBase64String(
+            Encoding.UTF8.GetBytes(BuildUserDataScript()));
+
+        var args = new List<string>
+        {
+            "ec2", "run-instances",
+            "--image-id", _options.AmiId,
+            "--instance-type", _options.InstanceType,
+            "--security-group-ids", _options.SecurityGroupId,
+            "--user-data", userDataBase64,
+            "--tag-specifications", "ResourceType=instance,Tags=[{Key=Name,Value=coreapi-test-dc},{Key=coreapi-managed,Value=true}]",
+            "--region", _options.AwsRegion
+        };
+
+        if (!string.IsNullOrEmpty(_options.SubnetId))
+        {
+            args.Add("--subnet-id");
+            args.Add(_options.SubnetId);
+        }
+
+        if (!string.IsNullOrEmpty(_options.KeyPairName))
+        {
+            args.Add("--key-name");
+            args.Add(_options.KeyPairName);
+        }
+
+        string instanceId = await QueryAwsAsync("Instances[0].InstanceId", args.ToArray());
+
+        await WaitForInstanceStateAsync(instanceId, "running");
+        return instanceId;
+    }
+
+    private string BuildUserDataScript() => $"""
+        <powershell>
+        $ErrorActionPreference = 'Stop'
+        Install-WindowsFeature AD-Domain-Services -IncludeManagementTools
+        Import-Module ADDSDeployment
+        $password = ConvertTo-SecureString '{_options.AdAdminPassword}' -AsPlainText -Force
+        Install-ADDSForest `
+            -DomainName '{_options.DomainName}' `
+            -DomainNetbiosName '{_options.DomainNetbiosName}' `
+            -SafeModeAdministratorPassword $password `
+            -InstallDns `
+            -Force
+        </powershell>
+        """;
+
+    private async Task WaitForInstanceStateAsync(string instanceId, string targetState)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        while (!cts.Token.IsCancellationRequested)
+        {
+            string state = await QueryAwsAsync("Reservations[0].Instances[0].State.Name",
+                "ec2", "describe-instances", "--instance-ids", instanceId,
+                "--region", _options.AwsRegion);
+            if (state == targetState) return;
+            try { await Task.Delay(TimeSpan.FromSeconds(10), cts.Token); }
+            catch (OperationCanceledException)
+            {
+                throw new TimeoutException(
+                    $"Instance {instanceId} did not reach state '{targetState}' within 10 minutes.");
+            }
+        }
+    }
+
+    private async Task<string> WaitForPublicIpAsync(string instanceId)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        while (!cts.Token.IsCancellationRequested)
+        {
+            string ip = await QueryAwsAsync("Reservations[0].Instances[0].PublicIpAddress",
+                "ec2", "describe-instances", "--instance-ids", instanceId,
+                "--region", _options.AwsRegion);
+            if (!string.IsNullOrEmpty(ip) && ip != "None") return ip;
+            try { await Task.Delay(TimeSpan.FromSeconds(5), cts.Token); }
+            catch (OperationCanceledException)
+            {
+                throw new TimeoutException(
+                    $"Instance {instanceId} did not receive a public IP within 2 minutes.");
+            }
+        }
+        throw new TimeoutException("Instance did not get public IP within timeout.");
+    }
+
+    private async Task AssociateElasticIpAsync(string instanceId, string allocationId)
+    {
+        await InvokeAwsAsync("ec2", "associate-address", "--instance-id", instanceId,
+            "--allocation-id", allocationId, "--allow-reassociation",
+            "--region", _options.AwsRegion);
+    }
+
+    private async Task StopInstanceAsync(string instanceId)
+    {
+        await InvokeAwsAsync("ec2", "stop-instances", "--instance-ids", instanceId,
+            "--region", _options.AwsRegion);
+    }
+
+    // -- Validation --
 
     private static void ValidateRequiredOptions(AdDcProvisionerOptions opts)
     {
@@ -203,8 +297,7 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             throw new InvalidOperationException(
                 "EC2 provisioner is enabled (ProvisionAdDc=true) but required settings are missing: " +
                 string.Join(", ", missing) + ". " +
-                "Run 'tools\\setup-test-dc.ps1' from the repository root to configure the environment. " +
-                "For manual setup see README.md > Integration tests > Option B.");
+                "Run 'tools\\setup-test-dc.ps1' from the repository root to configure the environment.");
     }
 
     private void WarnIfNoLdapTarget()
@@ -218,23 +311,11 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
                 "Run 'tools\\setup-test-dc.ps1' or set LDAP__* env vars.");
     }
 
-    // ── Seed ────────────────────────────────────────────────────────────────
+    // -- Seed --
 
-    /// <summary>
-    /// Creates a minimal but realistic AD structure for demos and manual testing.
-    /// Safe to call against an already-seeded DC — existing objects are silently skipped.
-    ///
-    /// Objects created:
-    ///   OUs   : Users, ServiceAccounts, Groups
-    ///   Users : alice.martin, bob.dupont, claire.bernard  (disabled — no password set over plain LDAP)
-    ///   Groups: IT-Admins, Dev-Team  (global security)
-    ///   SA    : svc-coreapi  (disabled)
-    /// </summary>
     private void SeedDemoData()
     {
-        // Extra wait: LDAP port opens slightly before the directory is fully ready to accept writes.
         Thread.Sleep(TimeSpan.FromSeconds(10));
-
         var identifier = new LdapDirectoryIdentifier(ResolvedHost, ResolvedPort);
         using var conn = new LdapConnection(identifier);
         conn.Credential = new NetworkCredential(ResolvedServiceAccountUser, ResolvedServiceAccountPassword);
@@ -286,7 +367,7 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             new("givenName", givenName),
             new("sn", surname),
             new("displayName", cn),
-            new("userAccountControl", "514")  // disabled — unicodePwd requires LDAPS
+            new("userAccountControl", "514")
         });
         SendIgnoringAlreadyExists(conn, req);
     }
@@ -298,7 +379,7 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         {
             new("objectClass", "group"),
             new("sAMAccountName", groupName),
-            new("groupType", "-2147483646")  // global security group
+            new("groupType", "-2147483646")
         });
         SendIgnoringAlreadyExists(conn, req);
     }
@@ -312,14 +393,13 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
 
     private static string ExtractDomain(string dn)
     {
-        // "OU=Users,DC=corp,DC=local" → "corp.local"
         var parts = dn.Split(',')
             .Where(p => p.StartsWith("DC=", StringComparison.OrdinalIgnoreCase))
             .Select(p => p[3..]);
         return string.Join(".", parts);
     }
 
-    // ── EC2 helpers ─────────────────────────────────────────────────────────
+    // -- Config and helpers --
 
     private static AdDcProvisionerOptions LoadOptions()
     {
@@ -331,127 +411,6 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
 
         return config.GetSection("TestInfrastructure").Get<AdDcProvisionerOptions>()
             ?? new AdDcProvisionerOptions();
-    }
-
-    private async Task StartExistingInstanceAsync(string instanceId)
-    {
-        await _ec2!.StartInstancesAsync(new StartInstancesRequest
-        {
-            InstanceIds = [instanceId]
-        });
-        await WaitForInstanceStateAsync(instanceId, "running");
-    }
-
-    private async Task<string> LaunchNewInstanceAsync()
-    {
-        if (string.IsNullOrEmpty(_options.AmiId))
-            throw new InvalidOperationException(
-                "TestInfrastructure:AmiId is required when ExistingInstanceId is not set.");
-        if (string.IsNullOrEmpty(_options.AdAdminPassword))
-            throw new InvalidOperationException(
-                "TestInfrastructure:AdAdminPassword is required.");
-
-        string userDataBase64 = Convert.ToBase64String(
-            Encoding.UTF8.GetBytes(BuildUserDataScript()));
-
-        var request = new RunInstancesRequest
-        {
-            ImageId = _options.AmiId,
-            InstanceType = new InstanceType(_options.InstanceType),
-            MinCount = 1,
-            MaxCount = 1,
-            UserData = userDataBase64,
-            TagSpecifications =
-            [
-                new TagSpecification
-                {
-                    ResourceType = ResourceType.Instance,
-                    Tags =
-                    [
-                        new Tag("Name", "coreapi-test-dc"),
-                        new Tag("coreapi-managed", "true")
-                    ]
-                }
-            ]
-        };
-
-        if (!string.IsNullOrEmpty(_options.SecurityGroupId))
-            request.SecurityGroupIds = [_options.SecurityGroupId];
-        if (!string.IsNullOrEmpty(_options.SubnetId))
-            request.SubnetId = _options.SubnetId;
-        if (!string.IsNullOrEmpty(_options.KeyPairName))
-            request.KeyName = _options.KeyPairName;
-
-        var response = await _ec2!.RunInstancesAsync(request);
-        string instanceId = response.Reservation.Instances[0].InstanceId;
-
-        await WaitForInstanceStateAsync(instanceId, "running");
-        return instanceId;
-    }
-
-    private string BuildUserDataScript() => $"""
-        <powershell>
-        $ErrorActionPreference = 'Stop'
-        Install-WindowsFeature AD-Domain-Services -IncludeManagementTools
-        Import-Module ADDSDeployment
-        $password = ConvertTo-SecureString '{_options.AdAdminPassword}' -AsPlainText -Force
-        Install-ADDSForest `
-            -DomainName '{_options.DomainName}' `
-            -DomainNetbiosName '{_options.DomainNetbiosName}' `
-            -SafeModeAdministratorPassword $password `
-            -InstallDns `
-            -Force
-        </powershell>
-        """;
-
-    private async Task WaitForInstanceStateAsync(string instanceId, string targetState)
-    {
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
-        while (true)
-        {
-            var desc = await _ec2!.DescribeInstancesAsync(
-                new DescribeInstancesRequest { InstanceIds = [instanceId] }, cts.Token);
-
-            string state = desc.Reservations[0].Instances[0].State.Name.Value;
-            if (state == targetState) return;
-
-            try { await Task.Delay(TimeSpan.FromSeconds(10), cts.Token); }
-            catch (OperationCanceledException)
-            {
-                throw new TimeoutException(
-                    $"Instance {instanceId} did not reach state '{targetState}' within 10 minutes.");
-            }
-        }
-    }
-
-    private async Task<string> WaitForPublicIpAsync(string instanceId)
-    {
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-        while (true)
-        {
-            var desc = await _ec2!.DescribeInstancesAsync(
-                new DescribeInstancesRequest { InstanceIds = [instanceId] }, cts.Token);
-
-            string? ip = desc.Reservations[0].Instances[0].PublicIpAddress;
-            if (!string.IsNullOrEmpty(ip)) return ip;
-
-            try { await Task.Delay(TimeSpan.FromSeconds(5), cts.Token); }
-            catch (OperationCanceledException)
-            {
-                throw new TimeoutException(
-                    $"Instance {instanceId} did not receive a public IP within 2 minutes.");
-            }
-        }
-    }
-
-    private async Task AssociateElasticIpAsync(string instanceId, string allocationId)
-    {
-        await _ec2!.AssociateAddressAsync(new AssociateAddressRequest
-        {
-            InstanceId = instanceId,
-            AllocationId = allocationId,
-            AllowReassociation = true
-        });
     }
 
     private async Task WaitForLdapAsync(string host)
@@ -471,7 +430,7 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             {
                 throw new TimeoutException(
                     $"LDAP port 389 on {host} did not open within {_options.LdapReadyTimeoutSeconds}s. " +
-                    "The DC may still be promoting — increase LdapReadyTimeoutSeconds or check EC2 console.");
+                    "The DC may still be promoting -- increase LdapReadyTimeoutSeconds or check EC2 console.");
             }
             catch
             {
