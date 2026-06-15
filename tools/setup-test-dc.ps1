@@ -209,19 +209,16 @@ function Get-OrCreateIamRole {
 
     Write-Info "Creating IAM role with SSM permissions..."
     $trustPolicyJson = '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
-    Write-Debug "Trust Policy JSON: $trustPolicyJson"
 
     $tempFile = [System.IO.Path]::GetTempFileName()
     try {
         [System.IO.File]::WriteAllText($tempFile, $trustPolicyJson, [System.Text.Encoding]::UTF8)
-        Write-Debug "Policy written to: $tempFile"
-        $fileContent = Get-Content -Path $tempFile -Raw
-        Write-Debug "File content: $fileContent"
 
         $tempFileFormatted = $tempFile -replace '\\', '/'
-        Write-Debug "File path for AWS CLI: file://$tempFileFormatted"
+        $fileUri = "file:///$tempFileFormatted"
+        Write-Debug "File URI for AWS CLI: $fileUri"
 
-        Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", "file://$tempFileFormatted", "--output", "json") | Out-Null
+        Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", $fileUri, "--output", "json") | Out-Null
     } finally {
         Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
     }
