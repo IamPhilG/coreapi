@@ -113,6 +113,7 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         }
 
         Console.WriteLine("[AdDcProvisioner] ✓ Initialization complete - ready for tests");
+    }
 
     public async Task DisposeAsync()
     {
