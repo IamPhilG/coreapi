@@ -18,7 +18,7 @@
      10  Writes tests\CoreApi.IntegrationTests\appsettings.Development.json
      11  Optionally runs the integration tests immediately
 
-.PARAMETER Profile
+.PARAMETER AwsProfile
     Named AWS CLI profile to use (matches ~/.aws/credentials or ~/.aws/config).
     Default: 'default'.
     Examples: 'coreapi-dev', 'my-sso-profile'
@@ -30,12 +30,12 @@
 
 .EXAMPLE
     .\tools\setup-test-dc.ps1
-    .\tools\setup-test-dc.ps1 -Profile coreapi-dev
-    .\tools\setup-test-dc.ps1 -Profile my-sso -Mode demo
+    .\tools\setup-test-dc.ps1 -AwsProfile coreapi-dev
+    .\tools\setup-test-dc.ps1 -AwsProfile my-sso -Mode demo
 #>
 [CmdletBinding()]
 param(
-    [string]$Profile = "default",
+    [string]$AwsProfile = "default",
 
     [ValidateSet("test", "demo", "")]
     [string]$Mode = ""
@@ -83,7 +83,7 @@ function Write-Warn([string]$text) { Write-Host "  $text" -ForegroundColor Yello
 
 function Invoke-Aws {
     param([string[]]$Arguments, [switch]$AllowFailure)
-    $cmdArgs = $Arguments + @("--profile", $Profile)
+    $cmdArgs = $Arguments + @("--profile", $AwsProfile)
     $output = & aws @cmdArgs 2>&1
     if ($LASTEXITCODE -eq 0) { return $output }
     if ($AllowFailure) { return $null }
@@ -91,19 +91,19 @@ function Invoke-Aws {
 }
 
 function Assert-AwsSession {
-    Write-Info "Checking AWS session for profile '$Profile'..."
-    $output = & aws sts get-caller-identity --profile $Profile --output json 2>&1
+    Write-Info "Checking AWS session for profile '$AwsProfile'..."
+    $output = & aws sts get-caller-identity --profile $AwsProfile --output json 2>&1
     if ($LASTEXITCODE -eq 0) {
         $id = $output | ConvertFrom-Json
         Write-Ok "Account : $($id.Account)"
         Write-Ok "Identity: $($id.Arn)"
         return
     }
-    Write-Warn "Session expired or not found for profile '$Profile'."
-    Write-Info "Attempting: aws sso login --profile $Profile"
-    & aws sso login --profile $Profile
+    Write-Warn "Session expired or not found for profile '$AwsProfile'."
+    Write-Info "Attempting: aws sso login --profile $AwsProfile"
+    & aws sso login --profile $AwsProfile
     if ($LASTEXITCODE -eq 0) {
-        $output = & aws sts get-caller-identity --profile $Profile --output json
+        $output = & aws sts get-caller-identity --profile $AwsProfile --output json
         if ($LASTEXITCODE -eq 0) {
             $id = $output | ConvertFrom-Json
             Write-Ok "Re-authenticated. Account: $($id.Account)"
@@ -112,8 +112,8 @@ function Assert-AwsSession {
     }
     Write-Host ""
     Write-Host "  Could not authenticate automatically. Run ONE of:" -ForegroundColor Red
-    Write-Host "    aws sso login --profile $Profile          # IAM Identity Center" -ForegroundColor White
-    Write-Host "    aws configure --profile $Profile          # Access key / secret" -ForegroundColor White
+    Write-Host "    aws sso login --profile $AwsProfile          # IAM Identity Center" -ForegroundColor White
+    Write-Host "    aws configure --profile $AwsProfile          # Access key / secret" -ForegroundColor White
     Write-Host "  Then re-run this script." -ForegroundColor White
     exit 1
 }
@@ -172,7 +172,7 @@ function Add-InboundRule([string]$SgId, [int]$Port, [string]$Cidr, [string]$Regi
     $ErrorActionPreference = "Continue"
     & aws ec2 authorize-security-group-ingress `
         --group-id $SgId --protocol tcp --port $Port --cidr $Cidr `
-        --region $Region --profile $Profile --output json | Out-Null
+        --region $Region --profile $AwsProfile --output json | Out-Null
     $ErrorActionPreference = $prev
 }
 
@@ -190,13 +190,12 @@ function Get-OrCreateIamRole {
     $roleName = "coreapi-test-dc-instance-role"
     Write-Info "Checking for IAM role: $roleName"
 
-    $existing = & aws iam get-role --role-name $roleName --output json 2>&1
-    if ($LASTEXITCODE -eq 0) {
+    $output = Invoke-Aws @("iam", "get-role", "--role-name", $roleName, "--output", "json") -AllowFailure
+    if ($output) {
         Write-Ok "IAM role already exists: $roleName"
         return $roleName
     }
 
-    # Role doesn't exist, create it
     Write-Info "Creating IAM role with SSM permissions..."
     $trustPolicy = @{
         Version = "2012-10-17"
@@ -209,11 +208,10 @@ function Get-OrCreateIamRole {
         )
     } | ConvertTo-Json -Depth 3
 
-    $raw = & aws iam create-role --role-name $roleName --assume-role-policy-document $trustPolicy --output json 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "Failed to create role: $raw" }
+    $raw = Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", $trustPolicy, "--output", "json")
 
     Write-Info "Attaching AmazonSSMManagedInstanceCore policy..."
-    & aws iam attach-role-policy --role-name $roleName --policy-arn "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" 2>&1 | Out-Null
+    Invoke-Aws @("iam", "attach-role-policy", "--role-name", $roleName, "--policy-arn", "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore") | Out-Null
 
     Write-Ok "IAM role created and configured: $roleName"
     $roleName
@@ -224,16 +222,15 @@ function Get-OrCreateInstanceProfile {
     $profileName = "coreapi-test-dc-instance-profile"
     Write-Info "Checking for instance profile: $profileName"
 
-    $existing = & aws iam get-instance-profile --instance-profile-name $profileName --output json 2>&1
-    if ($LASTEXITCODE -eq 0) {
+    $output = Invoke-Aws @("iam", "get-instance-profile", "--instance-profile-name", $profileName, "--output", "json") -AllowFailure
+    if ($output) {
         Write-Ok "Instance profile already exists: $profileName"
         return $profileName
     }
 
-    # Profile doesn't exist, create it
     Write-Info "Creating instance profile..."
-    & aws iam create-instance-profile --instance-profile-name $profileName --output json 2>&1 | Out-Null
-    & aws iam add-role-to-instance-profile --instance-profile-name $profileName --role-name $RoleName 2>&1 | Out-Null
+    Invoke-Aws @("iam", "create-instance-profile", "--instance-profile-name", $profileName, "--output", "json") | Out-Null
+    Invoke-Aws @("iam", "add-role-to-instance-profile", "--instance-profile-name", $profileName, "--role-name", $RoleName) | Out-Null
 
     Write-Ok "Instance profile created: $profileName"
     $profileName
@@ -257,7 +254,7 @@ if (Test-Path $ConfigPath) {
 }
 
 Write-Banner "CoreAPI -- EC2 test/demo DC setup wizard"
-Write-Info "Profile: $Profile"
+Write-Info "Profile: $AwsProfile"
 Write-Info "Output : $ConfigPath"
 if ($existingInstanceId) { Write-Info "Existing instance: $existingInstanceId (will be terminated)" }
 if ($isUpdate) {
@@ -265,7 +262,7 @@ if ($isUpdate) {
     if (-not (Read-YesNo "Continue?" $true)) { Write-Host "Aborted."; exit 0 }
 }
 
-Write-Step 1 11 "AWS session (profile: $Profile)"
+Write-Step 1 11 "AWS session (profile: $AwsProfile)"
 Assert-AwsSession
 
 Write-Step 2 11 "Region and instance type"
@@ -333,7 +330,7 @@ if ($existingInstanceId) {
     Write-Info "Previous instance: $existingInstanceId"
     if (Read-YesNo "Terminate and launch fresh instance?" $true) {
         Write-Info "Terminating $existingInstanceId..."
-        & aws ec2 terminate-instances --instance-ids $existingInstanceId --region $Region --profile $Profile --output json | Out-Null
+        & aws ec2 terminate-instances --instance-ids $existingInstanceId --region $Region --profile $AwsProfile --output json | Out-Null
         Write-Ok "Instance termination initiated."
         $existingInstanceId = ""
     } else {
@@ -374,7 +371,7 @@ if (Test-Path $keyPath) {
     Write-Info "Creating new key pair: $KeyPairName"
     if (-not (Test-Path $keyDir)) { New-Item -ItemType Directory -Path $keyDir -Force | Out-Null }
 
-    $raw = & aws ec2 create-key-pair --key-name $KeyPairName --region $Region --profile $Profile --query 'KeyMaterial' --output text 2>&1
+    $raw = & aws ec2 create-key-pair --key-name $KeyPairName --region $Region --profile $AwsProfile --query 'KeyMaterial' --output text 2>&1
     if ($LASTEXITCODE -eq 0) {
         $raw | Set-Content $keyPath -Encoding utf8
         icacls $keyPath /inheritance:r /grant:r "$env:USERNAME`:F" | Out-Null
@@ -409,7 +406,7 @@ Write-Ok "TCP 389 (LDAP) + 636 (LDAPS) + 3389 (RDP) from $myCidr"
 $config = [ordered]@{
     TestInfrastructure = [ordered]@{
         ProvisionAdDc           = $true
-        AwsProfile              = $Profile
+        AwsProfile              = $AwsProfile
         AwsRegion               = $Region
         InstanceType            = $InstanceType
         AmiId                   = $AmiId
@@ -432,8 +429,8 @@ $config | ConvertTo-Json -Depth 3 | Set-Content $ConfigPath -Encoding utf8
 Write-Ok "Written: $ConfigPath"
 
 Write-Banner "Setup complete"
-$account = & aws sts get-caller-identity --profile $Profile --query Account --output text
-Write-Host "  Profile       : $Profile" -ForegroundColor White
+$account = & aws sts get-caller-identity --profile $AwsProfile --query Account --output text
+Write-Host "  Profile       : $AwsProfile" -ForegroundColor White
 Write-Host "  Account       : $account" -ForegroundColor White
 Write-Host "  Region        : $Region" -ForegroundColor White
 Write-Host "  AMI           : $AmiId" -ForegroundColor White
