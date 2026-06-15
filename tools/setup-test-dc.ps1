@@ -209,7 +209,13 @@ function Get-OrCreateIamRole {
     Write-Info "Creating IAM role with SSM permissions..."
     $trustPolicyJson = '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 
-    Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", $trustPolicyJson, "--output", "json") | Out-Null
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $trustPolicyJson | Set-Content -Path $tempFile -Encoding UTF8 -NoNewline
+        Invoke-Aws @("iam", "create-role", "--role-name", $roleName, "--assume-role-policy-document", "file://$tempFile", "--output", "json") | Out-Null
+    } finally {
+        Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
+    }
 
     Write-Info "Attaching AmazonSSMManagedInstanceCore policy..."
     Invoke-Aws @("iam", "attach-role-policy", "--role-name", $roleName, "--policy-arn", "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore") | Out-Null
