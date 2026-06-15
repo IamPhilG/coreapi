@@ -301,6 +301,10 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
 
     private async Task WaitForInstanceStateAsync(string instanceId, string targetState)
     {
+        Console.WriteLine($"[AdDcProvisioner] Waiting for instance {instanceId} to reach state: {targetState}...");
+        DateTime startTime = DateTime.UtcNow;
+        DateTime lastLogTime = startTime;
+
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
         while (!cts.Token.IsCancellationRequested)
         {
@@ -314,6 +318,15 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
                 await WaitForInstanceStatusChecksAsync(instanceId);
                 return;
             }
+
+            // Show progress every 30 seconds
+            if (DateTime.UtcNow - lastLogTime > TimeSpan.FromSeconds(30))
+            {
+                int elapsed = (int)(DateTime.UtcNow - startTime).TotalSeconds;
+                Console.WriteLine($"[AdDcProvisioner] Still waiting... (current state: {state}, {elapsed}s elapsed)");
+                lastLogTime = DateTime.UtcNow;
+            }
+
             try { await Task.Delay(TimeSpan.FromSeconds(10), cts.Token); }
             catch (OperationCanceledException)
             {
@@ -325,6 +338,10 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
 
     private async Task WaitForInstanceStatusChecksAsync(string instanceId)
     {
+        Console.WriteLine($"[AdDcProvisioner] Waiting for instance {instanceId} status checks (system/instance)...");
+        DateTime startTime = DateTime.UtcNow;
+        DateTime lastLogTime = startTime;
+
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
         while (!cts.Token.IsCancellationRequested)
         {
@@ -340,8 +357,16 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
 
             if (systemStatus == "ok" && instanceStatus == "ok")
             {
-                Console.WriteLine($"[AdDcProvisioner] Instance {instanceId} status checks passed (ok/ok).");
+                Console.WriteLine($"[AdDcProvisioner] ✓ Instance {instanceId} status checks passed ({systemStatus}/{instanceStatus})");
                 return;
+            }
+
+            // Show progress every 30 seconds
+            if (DateTime.UtcNow - lastLogTime > TimeSpan.FromSeconds(30))
+            {
+                int elapsed = (int)(DateTime.UtcNow - startTime).TotalSeconds;
+                Console.WriteLine($"[AdDcProvisioner] Still waiting... (system: {systemStatus}, instance: {instanceStatus}, {elapsed}s elapsed)");
+                lastLogTime = DateTime.UtcNow;
             }
 
             try { await Task.Delay(TimeSpan.FromSeconds(10), cts.Token); }
@@ -356,6 +381,10 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
 
     private async Task<string> WaitForPublicIpAsync(string instanceId)
     {
+        Console.WriteLine($"[AdDcProvisioner] Waiting for public IP on instance {instanceId}...");
+        DateTime startTime = DateTime.UtcNow;
+        DateTime lastLogTime = startTime;
+
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         while (!cts.Token.IsCancellationRequested)
         {
@@ -363,6 +392,15 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
                 "ec2", "describe-instances", "--instance-ids", instanceId,
                 "--region", _options.AwsRegion);
             if (!string.IsNullOrEmpty(ip) && ip != "None") return ip;
+
+            // Show progress every 30 seconds
+            if (DateTime.UtcNow - lastLogTime > TimeSpan.FromSeconds(30))
+            {
+                int elapsed = (int)(DateTime.UtcNow - startTime).TotalSeconds;
+                Console.WriteLine($"[AdDcProvisioner] Still waiting for IP... ({elapsed}s elapsed)");
+                lastLogTime = DateTime.UtcNow;
+            }
+
             try { await Task.Delay(TimeSpan.FromSeconds(5), cts.Token); }
             catch (OperationCanceledException)
             {
