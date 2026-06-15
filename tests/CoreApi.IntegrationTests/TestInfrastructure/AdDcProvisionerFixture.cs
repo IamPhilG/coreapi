@@ -67,26 +67,36 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         if (!string.IsNullOrEmpty(_options.ExistingInstanceId))
         {
             instanceId = _options.ExistingInstanceId;
+            Console.WriteLine($"[AdDcProvisioner] Starting existing instance: {instanceId}");
             await StartExistingInstanceAsync(instanceId);
+            Console.WriteLine($"[AdDcProvisioner] ✓ Instance running");
         }
         else
         {
+            Console.WriteLine("[AdDcProvisioner] Launching new EC2 instance...");
             instanceId = await LaunchNewInstanceAsync();
             _launchedInstanceId = instanceId;
+            Console.WriteLine($"[AdDcProvisioner] ✓ Instance launched: {instanceId}");
             Console.WriteLine(
-                $"[AdDcProvisioner] New instance launched: {instanceId}. " +
-                "Add this as TestInfrastructure:ExistingInstanceId to reuse it on subsequent runs.");
+                $"[AdDcProvisioner] Add as TestInfrastructure:ExistingInstanceId to reuse on subsequent runs.");
         }
 
+        Console.WriteLine("[AdDcProvisioner] Acquiring public IP...");
         string publicIp = await WaitForPublicIpAsync(instanceId);
+        Console.WriteLine($"[AdDcProvisioner] ✓ Public IP: {publicIp}");
 
         if (!string.IsNullOrEmpty(_options.ElasticIpAllocationId))
         {
+            Console.WriteLine($"[AdDcProvisioner] Associating Elastic IP...");
             await AssociateElasticIpAsync(instanceId, _options.ElasticIpAllocationId);
+            Console.WriteLine($"[AdDcProvisioner] ✓ Elastic IP associated");
             publicIp = await WaitForPublicIpAsync(instanceId);
+            Console.WriteLine($"[AdDcProvisioner] ✓ IP confirmed: {publicIp}");
         }
 
+        Console.WriteLine($"[AdDcProvisioner] Waiting for LDAP (AD DS promotion)... (timeout: {_options.LdapReadyTimeoutSeconds}s)");
         await WaitForLdapAsync(publicIp);
+        Console.WriteLine($"[AdDcProvisioner] ✓ LDAP port 389 responding - AD DS ready");
 
         ResolvedHost = publicIp;
         ResolvedBaseDn = DomainNameToBaseDn(_options.DomainName);
@@ -96,8 +106,13 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         ResolvedServiceAccountPassword = _options.AdAdminPassword;
 
         if (_options.SeedDemoData)
+        {
+            Console.WriteLine("[AdDcProvisioner] Seeding demo AD data...");
             await Task.Run(SeedDemoData);
-    }
+            Console.WriteLine("[AdDcProvisioner] ✓ Demo data seeded");
+        }
+
+        Console.WriteLine("[AdDcProvisioner] ✓ Initialization complete - ready for tests");
 
     public async Task DisposeAsync()
     {
@@ -508,6 +523,9 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         using var cts = new CancellationTokenSource(
             TimeSpan.FromSeconds(_options.LdapReadyTimeoutSeconds));
 
+        DateTime startTime = DateTime.UtcNow;
+        DateTime lastLogTime = startTime;
+
         while (true)
         {
             try
@@ -531,7 +549,18 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             }
             catch
             {
-                try { await Task.Delay(TimeSpan.FromSeconds(15), cts.Token); }
+                try
+                {
+                    // Show progress every 30 seconds
+                    if (DateTime.UtcNow - lastLogTime > TimeSpan.FromSeconds(30))
+                    {
+                        int elapsed = (int)(DateTime.UtcNow - startTime).TotalSeconds;
+                        Console.WriteLine($"[AdDcProvisioner] Still waiting... ({elapsed}s elapsed, {_options.LdapReadyTimeoutSeconds}s timeout)");
+                        lastLogTime = DateTime.UtcNow;
+                    }
+
+                    await Task.Delay(TimeSpan.FromSeconds(15), cts.Token);
+                }
                 catch (OperationCanceledException)
                 {
                     throw new TimeoutException(
