@@ -223,8 +223,7 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
 
         if (!string.IsNullOrEmpty(_options.IamInstanceProfile))
         {
-            args.Add("--iam-instance-profile");
-            args.Add(_options.IamInstanceProfile);
+            args.Add($"--iam-instance-profile=Name={_options.IamInstanceProfile}");
         }
 
         string instanceId = await QueryAwsAsync("Instances[0].InstanceId", args.ToArray());
