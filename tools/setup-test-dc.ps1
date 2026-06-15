@@ -29,8 +29,8 @@
     xUnit fixture uses identical credentials.
 
 .PARAMETER Mode
-    'test'  — instance stopped after each test run (cheapest)
-    'demo'  — instance stays running after tests, AD seeded with demo objects
+    'test' - instance stopped after each test run (cheapest)
+    'demo' - instance stays running after tests, AD seeded with demo objects
     Omit to be asked interactively.
 
 .EXAMPLE
@@ -52,7 +52,7 @@ $ErrorActionPreference = "Stop"
 $RepoRoot   = Split-Path $PSScriptRoot -Parent
 $ConfigPath = Join-Path $RepoRoot "tests\CoreApi.IntegrationTests\appsettings.Development.json"
 
-# ── Console helpers ──────────────────────────────────────────────────────────
+# ---------- Console helpers --------------------------------------------------
 
 function Write-Banner([string]$text) {
     Write-Host ""
@@ -63,7 +63,7 @@ function Write-Banner([string]$text) {
 
 function Write-Step([int]$n, [int]$total, [string]$text) {
     Write-Host ""
-    Write-Host "Step $n/$total — $text" -ForegroundColor Cyan
+    Write-Host "Step $n/$total -- $text" -ForegroundColor Cyan
 }
 
 function Read-WithDefault([string]$prompt, [string]$default) {
@@ -88,20 +88,16 @@ function Write-Info([string]$text) { Write-Host "  $text" -ForegroundColor DarkG
 function Write-Ok([string]$text)   { Write-Host "  $text" -ForegroundColor Green }
 function Write-Warn([string]$text) { Write-Host "  $text" -ForegroundColor Yellow }
 
-# ── AWS helpers ──────────────────────────────────────────────────────────────
+# ---------- AWS helpers ------------------------------------------------------
 
-# Run an AWS CLI command with --profile and capture output.
-# Returns stdout as a string array; throws on non-zero exit after reauth attempt.
 function Invoke-Aws {
     param(
         [string[]]$Arguments,
         [switch]$AllowFailure
     )
-
-    $args = $Arguments + @("--profile", $Profile)
-    $output = & aws @args 2>&1
+    $cmdArgs = $Arguments + @("--profile", $Profile)
+    $output = & aws @cmdArgs 2>&1
     if ($LASTEXITCODE -eq 0) { return $output }
-
     if ($AllowFailure) { return $null }
     throw "AWS CLI error (exit $LASTEXITCODE): $($output -join ' ')"
 }
@@ -117,12 +113,9 @@ function Assert-AwsSession {
         return
     }
 
-    # Session expired — attempt re-authentication
     Write-Warn "Session expired or not found for profile '$Profile'."
-
-    # Try SSO login first (works for IAM Identity Center profiles)
     Write-Info "Attempting: aws sso login --profile $Profile"
-    aws sso login --profile $Profile
+    & aws sso login --profile $Profile
     if ($LASTEXITCODE -eq 0) {
         $output = & aws sts get-caller-identity --profile $Profile --output json
         if ($LASTEXITCODE -eq 0) {
@@ -132,7 +125,6 @@ function Assert-AwsSession {
         }
     }
 
-    # SSO failed — give explicit guidance
     Write-Host ""
     Write-Host "  Could not authenticate automatically. Run ONE of:" -ForegroundColor Red
     Write-Host "    aws sso login --profile $Profile          # IAM Identity Center" -ForegroundColor White
@@ -183,7 +175,7 @@ function Get-OrCreateSecurityGroup([string]$Region) {
     $raw = Invoke-Aws @(
         "ec2", "create-security-group",
         "--group-name", $name,
-        "--description", "CoreAPI test/demo DC — LDAP + LDAPS + RDP",
+        "--description", "CoreAPI test/demo DC - LDAP + LDAPS + RDP",
         "--region", $Region,
         "--output", "json"
     )
@@ -193,11 +185,11 @@ function Get-OrCreateSecurityGroup([string]$Region) {
 function Add-InboundRule([string]$SgId, [int]$Port, [string]$Cidr, [string]$Region) {
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    aws ec2 authorize-security-group-ingress `
+    & aws ec2 authorize-security-group-ingress `
         --group-id $SgId --protocol tcp --port $Port --cidr $Cidr `
         --region $Region --profile $Profile --output json | Out-Null
     $ErrorActionPreference = $prev
-    # Non-zero = duplicate rule = harmless
+    # Non-zero exit = duplicate rule = harmless
 }
 
 function New-ElasticIp([string]$Region) {
@@ -210,7 +202,7 @@ function New-ElasticIp([string]$Region) {
     $raw -join "" | ConvertFrom-Json
 }
 
-# ── Read existing config (for re-runs) ──────────────────────────────────────
+# ---------- Read existing config (for re-runs) --------------------------------
 
 $prevConfig         = $null
 $existingInstanceId = ""
@@ -227,9 +219,9 @@ if (Test-Path $ConfigPath) {
     } catch { }
 }
 
-# ── Banner ───────────────────────────────────────────────────────────────────
+# ---------- Banner ------------------------------------------------------------
 
-Write-Banner "CoreAPI — EC2 test/demo DC setup wizard"
+Write-Banner "CoreAPI -- EC2 test/demo DC setup wizard"
 Write-Info "Profile: $Profile"
 Write-Info "Output : $ConfigPath"
 if ($existingInstanceId) { Write-Info "Existing instance: $existingInstanceId (will be preserved)" }
@@ -238,21 +230,21 @@ if ($isUpdate) {
     if (-not (Read-YesNo "Continue?" $true)) { Write-Host "Aborted."; exit 0 }
 }
 
-# ── Step 1 — AWS session ─────────────────────────────────────────────────────
+# ---------- Step 1 -- AWS session --------------------------------------------
 
 Write-Step 1 7 "AWS session (profile: $Profile)"
 Assert-AwsSession
 
-# ── Step 2 — Region & instance type ─────────────────────────────────────────
+# ---------- Step 2 -- Region and instance type --------------------------------
 
-Write-Step 2 7 "Region & instance type"
+Write-Step 2 7 "Region and instance type"
 $defaultRegion = if ($prevConfig) { $prevConfig.TestInfrastructure.AwsRegion } else { "us-east-1" }
 $defaultType   = if ($prevConfig) { $prevConfig.TestInfrastructure.InstanceType } else { "t3.medium" }
 
 $Region       = Read-WithDefault "AWS region" $defaultRegion
 $InstanceType = Read-WithDefault "Instance type (t3.medium ~`$0.075/hr)" $defaultType
 
-# ── Step 3 — AD domain ───────────────────────────────────────────────────────
+# ---------- Step 3 -- AD domain -----------------------------------------------
 
 Write-Step 3 7 "Active Directory domain"
 $defaultDomain  = if ($prevConfig) { $prevConfig.TestInfrastructure.DomainName } else { "corp.local" }
@@ -261,11 +253,11 @@ $defaultNetbios = if ($prevConfig) { $prevConfig.TestInfrastructure.DomainNetbio
 $DomainName    = Read-WithDefault "Domain FQDN" $defaultDomain
 $DomainNetbios = Read-WithDefault "NETBIOS name" $defaultNetbios
 
-# ── Step 4 — Password ────────────────────────────────────────────────────────
+# ---------- Step 4 -- Password ------------------------------------------------
 
 Write-Step 4 7 "AD Administrator password"
-Write-Info "Min 8 chars — uppercase + lowercase + digit + symbol."
-Write-Info "Written to the local config file only (gitignored — never committed)."
+Write-Info "Min 8 chars -- uppercase + lowercase + digit + symbol."
+Write-Info "Written to the local config file only (gitignored, never committed)."
 
 $existingPwd     = if ($prevConfig) { $prevConfig.TestInfrastructure.AdAdminPassword } else { "" }
 $AdAdminPassword = if ($existingPwd -and (Read-YesNo "Keep existing password?" $true)) {
@@ -277,11 +269,11 @@ $AdAdminPassword = if ($existingPwd -and (Read-YesNo "Keep existing password?" $
     $p1
 }
 
-# ── Step 5 — Elastic IP ──────────────────────────────────────────────────────
+# ---------- Step 5 -- Elastic IP ----------------------------------------------
 
 Write-Step 5 7 "Elastic IP"
 Write-Info "Keeps the DC at the same address across start/stop cycles."
-Write-Info "Without one the IP changes every restart — config update needed."
+Write-Info "Without one the IP changes every restart -- config update needed."
 
 $EipAllocationId = $existingEipAllocId
 if ($existingEipAllocId) {
@@ -293,11 +285,11 @@ if ($existingEipAllocId) {
     Write-Ok "Allocated: $($eip.PublicIp) ($EipAllocationId)"
 }
 
-# ── Step 6 — Mode ────────────────────────────────────────────────────────────
+# ---------- Step 6 -- Mode ----------------------------------------------------
 
 Write-Step 6 7 "Run mode"
-Write-Info "test  — instance stopped after each test run (cheapest)"
-Write-Info "demo  — instance kept running + AD seeded with demo objects"
+Write-Info "test - instance stopped after each test run (cheapest)"
+Write-Info "demo - instance kept running + AD seeded with demo objects"
 
 if (-not $Mode) {
     $modeInput = Read-WithDefault "Mode" "test"
@@ -308,7 +300,7 @@ $KeepRunning  = ($Mode -eq "demo")
 $SeedDemoData = ($Mode -eq "demo")
 Write-Ok "Mode: $Mode (KeepRunning=$KeepRunning, SeedDemoData=$SeedDemoData)"
 
-# ── Step 7 — AWS resources ───────────────────────────────────────────────────
+# ---------- Step 7 -- AWS resources -------------------------------------------
 
 Write-Step 7 7 "Provisioning AWS resources"
 
@@ -328,7 +320,7 @@ Add-InboundRule $SgId 636  $myCidr $Region
 Add-InboundRule $SgId 3389 $myCidr $Region
 Write-Ok "TCP 389 (LDAP) + 636 (LDAPS) + 3389 (RDP) from $myCidr"
 
-# ── Write config ─────────────────────────────────────────────────────────────
+# ---------- Write config ------------------------------------------------------
 
 $config = [ordered]@{
     TestInfrastructure = [ordered]@{
@@ -354,11 +346,12 @@ $config = [ordered]@{
 $config | ConvertTo-Json -Depth 3 | Set-Content $ConfigPath -Encoding utf8
 Write-Ok "Written: $ConfigPath"
 
-# ── Summary ──────────────────────────────────────────────────────────────────
+# ---------- Summary -----------------------------------------------------------
 
 Write-Banner "Setup complete"
+$account = & aws sts get-caller-identity --profile $Profile --query Account --output text
 Write-Host "  Profile       : $Profile" -ForegroundColor White
-Write-Host "  Account       : $(aws sts get-caller-identity --profile $Profile --query Account --output text)" -ForegroundColor White
+Write-Host "  Account       : $account" -ForegroundColor White
 Write-Host "  Region        : $Region" -ForegroundColor White
 Write-Host "  AMI           : $AmiId" -ForegroundColor White
 Write-Host "  Security Group: $SgId" -ForegroundColor White
@@ -368,21 +361,21 @@ Write-Host ""
 Write-Info "First run : ~12-15 min (Windows boot + AD DS promotion + reboot)."
 Write-Info "Later runs: ~2-3 min (restart stopped instance)."
 if ($Mode -eq "demo") {
-    Write-Info "DC stays running after tests — point coreapi at the IP shown in test output."
+    Write-Info "DC stays running after tests -- point coreapi at the IP shown in test output."
 }
 Write-Host ""
 
 if (Read-YesNo "Run integration tests now?" $true) {
     Push-Location $RepoRoot
     try {
-        dotnet test tests\CoreApi.IntegrationTests --filter "Category=Integration" -v normal
+        & dotnet test tests\CoreApi.IntegrationTests --filter "Category=Integration" -v normal
         if ($LASTEXITCODE -eq 0) { Write-Ok "All integration tests passed." }
-        else                     { Write-Warn "Some tests failed — check output above." }
+        else                     { Write-Warn "Some tests failed -- check output above." }
     } finally {
         Pop-Location
     }
 } else {
     Write-Host ""
     Write-Info "When ready:"
-    Write-Host "  dotnet test tests\CoreApi.IntegrationTests --filter `"Category=Integration`" -v normal" -ForegroundColor White
+    Write-Host "  dotnet test tests\CoreApi.IntegrationTests --filter ""Category=Integration"" -v normal" -ForegroundColor White
 }

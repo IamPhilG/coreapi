@@ -5,7 +5,6 @@ using System.Text;
 using Amazon;
 using Amazon.EC2;
 using Amazon.EC2.Model;
-using Amazon.Runtime.CredentialManagement;
 using Microsoft.Extensions.Configuration;
 
 namespace CoreApi.IntegrationTests.TestInfrastructure;
@@ -141,17 +140,14 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
     {
         var region = RegionEndpoint.GetBySystemName(_options.AwsRegion);
 
-        if (string.IsNullOrEmpty(_options.AwsProfile))
-            return new AmazonEC2Client(region);
+        if (!string.IsNullOrEmpty(_options.AwsProfile))
+        {
+            // AWS_PROFILE is honoured by the SDK default credential chain and avoids
+            // pulling in AWSSDK.Signin (required by CredentialProfileStoreChain for SSO profiles).
+            Environment.SetEnvironmentVariable("AWS_PROFILE", _options.AwsProfile);
+        }
 
-        var chain = new CredentialProfileStoreChain();
-        if (!chain.TryGetAWSCredentials(_options.AwsProfile, out var credentials))
-            throw new InvalidOperationException(
-                $"AWS profile '{_options.AwsProfile}' not found. " +
-                $"Run: aws configure --profile {_options.AwsProfile}  " +
-                $"or: aws sso login --profile {_options.AwsProfile}");
-
-        return new AmazonEC2Client(credentials, region);
+        return new AmazonEC2Client(region);
     }
 
     // ── Validation ──────────────────────────────────────────────────────────
