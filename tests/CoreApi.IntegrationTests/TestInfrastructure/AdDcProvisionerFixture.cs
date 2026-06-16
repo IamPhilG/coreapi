@@ -211,16 +211,15 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             }
         }
 
-        string userDataBase64 = Convert.ToBase64String(
-            Encoding.UTF8.GetBytes(BuildUserDataScript()));
-
+        // AWS CLI automatically base64-encodes user-data, so pass the script directly
+        // (don't pre-encode to base64 or you get double-encoding → EC2Launch can't parse)
         var args = new List<string>
         {
             "ec2", "run-instances",
             "--image-id", _options.AmiId,
             "--instance-type", _options.InstanceType,
             "--security-group-ids", _options.SecurityGroupId,
-            "--user-data", userDataBase64,
+            "--user-data", BuildUserDataScript(),
             "--tag-specifications", "ResourceType=instance,Tags=[{Key=Name,Value=coreapi-test-dc},{Key=coreapi-managed,Value=true}]",
             "--region", _options.AwsRegion
         };
