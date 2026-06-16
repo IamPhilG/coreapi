@@ -67,9 +67,29 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         if (!string.IsNullOrEmpty(_options.ExistingInstanceId))
         {
             instanceId = _options.ExistingInstanceId;
-            Console.WriteLine($"[AdDcProvisioner] Starting existing instance: {instanceId}");
-            await StartExistingInstanceAsync(instanceId);
-            Console.WriteLine($"[AdDcProvisioner] ✓ Instance running");
+            Console.WriteLine($"[AdDcProvisioner] Checking existing instance state: {instanceId}");
+            string state = await GetInstanceStateAsync(instanceId);
+            Console.WriteLine($"[AdDcProvisioner] Instance state: {state}");
+
+            if (state == "running")
+            {
+                Console.WriteLine($"[AdDcProvisioner] ✓ Instance is already running");
+            }
+            else if (state == "stopped")
+            {
+                Console.WriteLine($"[AdDcProvisioner] Restarting stopped instance...");
+                await StartExistingInstanceAsync(instanceId);
+                Console.WriteLine($"[AdDcProvisioner] ✓ Instance restarted");
+            }
+            else
+            {
+                Console.WriteLine($"[AdDcProvisioner] Instance in invalid state '{state}'. Terminating and launching new instance...");
+                await TerminateInstanceAsync(instanceId);
+                Console.WriteLine($"[AdDcProvisioner] Launching new EC2 instance...");
+                instanceId = await LaunchNewInstanceAsync();
+                _launchedInstanceId = instanceId;
+                Console.WriteLine($"[AdDcProvisioner] ✓ Instance launched: {instanceId}");
+            }
         }
         else
         {
@@ -188,6 +208,48 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         await InvokeAwsAsync("ec2", "start-instances", "--instance-ids", instanceId,
             "--region", _options.AwsRegion);
         await WaitForInstanceStateAsync(instanceId, "running");
+    }
+
+    private async Task<string> GetInstanceStateAsync(string instanceId)
+    {
+        try
+        {
+            return await QueryAwsAsync(
+                "Reservations[0].Instances[0].State.Name",
+                "ec2", "describe-instances", "--instance-ids", instanceId,
+                "--region", _options.AwsRegion);
+        }
+        catch
+        {
+            return "unknown";
+        }
+    }
+
+    private async Task TerminateInstanceAsync(string instanceId)
+    {
+        try
+        {
+            Console.WriteLine($"[AdDcProvisioner] Terminating instance {instanceId}...");
+            await InvokeAwsAsync("ec2", "terminate-instances", "--instance-ids", instanceId,
+                "--region", _options.AwsRegion);
+            // Wait up to 2 minutes for termination to complete
+            DateTime start = DateTime.UtcNow;
+            while (DateTime.UtcNow - start < TimeSpan.FromMinutes(2))
+            {
+                string state = await GetInstanceStateAsync(instanceId);
+                if (state == "terminated")
+                {
+                    Console.WriteLine($"[AdDcProvisioner] ✓ Instance terminated");
+                    return;
+                }
+                await Task.Delay(5000);
+            }
+            Console.WriteLine($"[AdDcProvisioner] Termination timeout - instance may still be terminating");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AdDcProvisioner] Error terminating instance: {ex.Message}");
+        }
     }
 
     private async Task<string> LaunchNewInstanceAsync()
