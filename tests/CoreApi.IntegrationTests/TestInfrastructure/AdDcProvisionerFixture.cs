@@ -273,6 +273,9 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         try {
             Add-Content $logFile "$(Get-Date): Starting AD DS setup"
 
+            Add-Content $logFile "$(Get-Date): Installing DNS Server..."
+            Install-WindowsFeature DNS -IncludeManagementTools | Out-String | Add-Content $logFile
+
             Add-Content $logFile "$(Get-Date): Installing AD DS..."
             Install-WindowsFeature AD-Domain-Services -IncludeManagementTools | Out-String | Add-Content $logFile
 
@@ -288,9 +291,11 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
                 -DomainNetbiosName '{{_options.DomainNetbiosName}}' `
                 -SafeModeAdministratorPassword $password `
                 -InstallDns `
+                -NoRebootOnCompletion `
                 -Force | Out-String | Add-Content $logFile
 
-            Add-Content $logFile "$(Get-Date): AD DS setup completed successfully"
+            Add-Content $logFile "$(Get-Date): AD DS setup completed successfully. Restarting..."
+            Restart-Computer -Force
         } catch {
             Add-Content $logFile "$(Get-Date): ERROR: $_"
             Add-Content $logFile "$(Get-Date): Stack trace: $($_.ScriptStackTrace)"
