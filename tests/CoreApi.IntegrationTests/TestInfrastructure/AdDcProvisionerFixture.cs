@@ -271,10 +271,12 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         $logFile = 'C:\AddsSetup.log'
 
         try {
-            Add-Content $logFile "$(Get-Date): Starting AD DS setup"
+            Add-Content $logFile "$(Get-Date): Starting unattended AD DS deployment"
 
-            # Step 1: Configure static IP (DNS requires static IP, not DHCP)
-            Add-Content $logFile "$(Get-Date): Configuring network interface with static IP..."
+            # ════════════════════════════════════════════════════════════════════════
+            # Step 1: Network Configuration (CRITICAL: DNS requires static IP)
+            # ════════════════════════════════════════════════════════════════════════
+            Add-Content $logFile "$(Get-Date): [1/6] Configuring network with static IP..."
             $adapter = Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | Select-Object -First 1
             if (-not $adapter) { throw "No active network adapter found" }
 
@@ -283,47 +285,86 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             $currentIp = $currentConfig.IPv4Address[0].IPAddress
             $currentGateway = $currentConfig.IPv4DefaultGateway[0].NextHop
 
-            # Remove DHCP, set static IP
+            # Disable DHCP and set static IP
             Set-NetIPInterface -InterfaceIndex $ifIndex -DHCP Disabled
             Remove-NetIPAddress -InterfaceIndex $ifIndex -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue
-            New-NetIPAddress -InterfaceIndex $ifIndex -IPAddress $currentIp -AddressFamily IPv4 -PrefixLength 24 | Out-String | Add-Content $logFile
-            New-NetRoute -InterfaceIndex $ifIndex -DestinationPrefix "0.0.0.0/0" -NextHop $currentGateway -ErrorAction SilentlyContinue | Out-String | Add-Content $logFile
+            New-NetIPAddress -InterfaceIndex $ifIndex -IPAddress $currentIp -AddressFamily IPv4 -PrefixLength 24 | Out-Null
+            New-NetRoute -InterfaceIndex $ifIndex -DestinationPrefix "0.0.0.0/0" -NextHop $currentGateway -ErrorAction SilentlyContinue | Out-Null
 
-            # Set DNS to point to self (required for DNS service to start)
-            Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses @("127.0.0.1", "8.8.8.8") | Out-String | Add-Content $logFile
+            # Set DNS to point to self first (127.0.0.1) - CRITICAL for DNS service startup
+            Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses @("127.0.0.1", "8.8.8.8") | Out-Null
+            Add-Content $logFile "$(Get-Date): Network configured - Static IP: $currentIp, DNS: 127.0.0.1"
 
-            Add-Content $logFile "$(Get-Date): Network configured - IP: $currentIp (static)"
+            # ════════════════════════════════════════════════════════════════════════
+            # Step 2: Install DNS Server role
+            # ════════════════════════════════════════════════════════════════════════
+            Add-Content $logFile "$(Get-Date): [2/6] Installing DNS Server role..."
+            Install-WindowsFeature DNS -IncludeManagementTools | Out-Null
+            Add-Content $logFile "$(Get-Date): DNS Server role installed"
 
-            # Step 2: Install DNS Server (must be before AD DS)
-            Add-Content $logFile "$(Get-Date): Installing DNS Server..."
-            Install-WindowsFeature DNS -IncludeManagementTools | Out-String | Add-Content $logFile
-
+            # ════════════════════════════════════════════════════════════════════════
             # Step 3: Install AD-Domain-Services role
-            Add-Content $logFile "$(Get-Date): Installing AD DS role..."
-            Install-WindowsFeature AD-Domain-Services -IncludeManagementTools | Out-String | Add-Content $logFile
+            # ════════════════════════════════════════════════════════════════════════
+            Add-Content $logFile "$(Get-Date): [3/6] Installing AD-Domain-Services role..."
+            Install-WindowsFeature AD-Domain-Services -IncludeManagementTools | Out-Null
+            Add-Content $logFile "$(Get-Date): AD-Domain-Services role installed"
 
-            # Step 4: Import ADDSDeployment module
-            Add-Content $logFile "$(Get-Date): Importing ADDSDeployment module..."
-            Import-Module ADDSDeployment
+            # ════════════════════════════════════════════════════════════════════════
+            # Step 4: Create DCPROMO answer file (unattended promotion)
+            # ════════════════════════════════════════════════════════════════════════
+            Add-Content $logFile "$(Get-Date): [4/6] Creating DCPROMO answer file..."
+            $nl = [Environment]::NewLine
+            $answerFile = "[DCINSTALL]" + $nl + `
+                "; Unattended forest promotion answer file" + $nl + `
+                "AutoConfigDNS=1" + $nl + `
+                "CreateDNSDelegation=0" + $nl + `
+                "DatabasePath=`"C:\Windows\NTDS`"" + $nl + `
+                "LogPath=`"C:\Windows\NTDS`"" + $nl + `
+                "SYSVOLPath=`"C:\Windows\SYSVOL`"" + $nl + `
+                "SiteName=`"Default-First-Site-Name`"" + $nl + `
+                "InstallDNS=Yes" + $nl + `
+                "AllowAnonymousAccess=No" + $nl + `
+                "DomainNetBiosName={{_options.DomainNetbiosName}}" + $nl + `
+                "DomainName={{_options.DomainName}}" + $nl + `
+                "ForestFunctionality=2012R2" + $nl + `
+                "DomainFunctionality=2012R2" + $nl + `
+                "ReplicaOrNewDomain=Forest" + $nl + `
+                "NewDNSName={{_options.DomainName}}" + $nl + `
+                "SafeModeAdminPassword={{_options.AdAdminPassword}}" + $nl + `
+                "RebootOnCompletion=Yes"
+            $answerFile | Set-Content -Path "C:\Windows\System32\dcpromo.answer" -Encoding ASCII
+            Add-Content $logFile "$(Get-Date): DCPROMO answer file created at C:\Windows\System32\dcpromo.answer"
 
-            # Step 5: Create safe mode admin password
-            Add-Content $logFile "$(Get-Date): Creating safe mode admin password..."
-            $password = ConvertTo-SecureString '{{_options.AdAdminPassword}}' -AsPlainText -Force
+            # ════════════════════════════════════════════════════════════════════════
+            # Step 5: Execute DCPROMO with answer file (unattended)
+            # ════════════════════════════════════════════════════════════════════════
+            Add-Content $logFile "$(Get-Date): [5/6] Executing DCPROMO for forest promotion..."
+            Add-Content $logFile "$(Get-Date): Domain: {{_options.DomainName}}, NetBIOS: {{_options.DomainNetbiosName}}"
 
-            # Step 6: Promote to Domain Controller Forest
-            Add-Content $logFile "$(Get-Date): Promoting to Domain Controller..."
-            Install-ADDSForest `
-                -DomainName '{{_options.DomainName}}' `
-                -DomainNetbiosName '{{_options.DomainNetbiosName}}' `
-                -SafeModeAdministratorPassword $password `
-                -InstallDns `
-                -NoRebootOnCompletion:$false `
-                -Force | Out-String | Add-Content $logFile
+            $dcpromoProcess = Start-Process -FilePath "dcpromo.exe" `
+                -ArgumentList '/answer:"C:\Windows\System32\dcpromo.answer" /unattend' `
+                -NoNewWindow -PassThru -RedirectStandardOutput "C:\dcpromo.log"
 
-            Add-Content $logFile "$(Get-Date): AD DS promotion completed. System will restart automatically."
+            $dcpromoProcess.WaitForExit()
+            $dcpromoExitCode = $dcpromoProcess.ExitCode
+
+            Add-Content $logFile "$(Get-Date): DCPROMO exited with code: $dcpromoExitCode"
+
+            if (Test-Path "C:\dcpromo.log") {
+                Get-Content "C:\dcpromo.log" | Add-Content $logFile
+            }
+
+            if ($dcpromoExitCode -ne 0 -and $dcpromoExitCode -ne 3010) {
+                throw "DCPROMO failed with exit code $dcpromoExitCode (3010 = success with reboot required)"
+            }
+
+            Add-Content $logFile "$(Get-Date): [6/6] Forest promotion completed successfully. System will reboot."
+            Add-Content $logFile "$(Get-Date): DCPROMO will trigger automatic restart. Expect DC online in 2-5 minutes after reboot."
+
         } catch {
-            Add-Content $logFile "$(Get-Date): ERROR: $_"
+            Add-Content $logFile "$(Get-Date): ❌ ERROR: $_"
             Add-Content $logFile "$(Get-Date): Stack trace: $($_.ScriptStackTrace)"
+            Add-Content $logFile "$(Get-Date): Check C:\dcpromo.log and C:\Windows\debug\dcpromo.log for details"
             throw
         }
         </powershell>
