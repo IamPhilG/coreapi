@@ -273,29 +273,54 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         try {
             Add-Content $logFile "$(Get-Date): Starting AD DS setup"
 
+            # Step 1: Configure static IP (DNS requires static IP, not DHCP)
+            Add-Content $logFile "$(Get-Date): Configuring network interface with static IP..."
+            $adapter = Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | Select-Object -First 1
+            if (-not $adapter) { throw "No active network adapter found" }
+
+            $ifIndex = $adapter.InterfaceIndex
+            $currentConfig = Get-NetIPConfiguration -InterfaceIndex $ifIndex
+            $currentIp = $currentConfig.IPv4Address[0].IPAddress
+            $currentGateway = $currentConfig.IPv4DefaultGateway[0].NextHop
+
+            # Remove DHCP, set static IP
+            Set-NetIPInterface -InterfaceIndex $ifIndex -DHCP Disabled
+            Remove-NetIPAddress -InterfaceIndex $ifIndex -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue
+            New-NetIPAddress -InterfaceIndex $ifIndex -IPAddress $currentIp -AddressFamily IPv4 -PrefixLength 24 | Out-String | Add-Content $logFile
+            New-NetRoute -InterfaceIndex $ifIndex -DestinationPrefix "0.0.0.0/0" -NextHop $currentGateway -ErrorAction SilentlyContinue | Out-String | Add-Content $logFile
+
+            # Set DNS to point to self (required for DNS service to start)
+            Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses @("127.0.0.1", "8.8.8.8") | Out-String | Add-Content $logFile
+
+            Add-Content $logFile "$(Get-Date): Network configured - IP: $currentIp (static)"
+
+            # Step 2: Install DNS Server (must be before AD DS)
             Add-Content $logFile "$(Get-Date): Installing DNS Server..."
             Install-WindowsFeature DNS -IncludeManagementTools | Out-String | Add-Content $logFile
 
-            Add-Content $logFile "$(Get-Date): Installing AD DS..."
+            # Step 3: Install AD-Domain-Services role
+            Add-Content $logFile "$(Get-Date): Installing AD DS role..."
             Install-WindowsFeature AD-Domain-Services -IncludeManagementTools | Out-String | Add-Content $logFile
 
+            # Step 4: Import ADDSDeployment module
             Add-Content $logFile "$(Get-Date): Importing ADDSDeployment module..."
             Import-Module ADDSDeployment
 
-            Add-Content $logFile "$(Get-Date): Creating safe mode password..."
+            # Step 5: Create safe mode admin password
+            Add-Content $logFile "$(Get-Date): Creating safe mode admin password..."
             $password = ConvertTo-SecureString '{{_options.AdAdminPassword}}' -AsPlainText -Force
 
-            Add-Content $logFile "$(Get-Date): Installing AD DS Forest..."
+            # Step 6: Promote to Domain Controller Forest
+            Add-Content $logFile "$(Get-Date): Promoting to Domain Controller..."
             Install-ADDSForest `
                 -DomainName '{{_options.DomainName}}' `
                 -DomainNetbiosName '{{_options.DomainNetbiosName}}' `
                 -SafeModeAdministratorPassword $password `
                 -InstallDns `
-                -NoRebootOnCompletion `
+                -NoRebootOnCompletion:$false `
                 -Force | Out-String | Add-Content $logFile
 
-            Add-Content $logFile "$(Get-Date): AD DS setup completed successfully. Restarting..."
-            Restart-Computer -Force
+            Add-Content $logFile "$(Get-Date): AD DS promotion completed. System will restart automatically."
         } catch {
             Add-Content $logFile "$(Get-Date): ERROR: $_"
             Add-Content $logFile "$(Get-Date): Stack trace: $($_.ScriptStackTrace)"
