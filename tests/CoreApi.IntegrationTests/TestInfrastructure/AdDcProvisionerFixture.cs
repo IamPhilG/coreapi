@@ -107,8 +107,8 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
 
         if (!string.IsNullOrEmpty(_options.ElasticIpAllocationId))
         {
-            Console.WriteLine($"[AdDcProvisioner] Associating Elastic IP...");
-            await AssociateElasticIpAsync(instanceId, _options.ElasticIpAllocationId);
+            Console.WriteLine($"[AdDcProvisioner] Associating Elastic IP (may retry if instance not ready)...");
+            await AssociateElasticIpWithRetryAsync(instanceId, _options.ElasticIpAllocationId);
             Console.WriteLine($"[AdDcProvisioner] ✓ Elastic IP associated");
             publicIp = await WaitForPublicIpAsync(instanceId);
             Console.WriteLine($"[AdDcProvisioner] ✓ IP confirmed: {publicIp}");
@@ -541,6 +541,34 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             }
         }
         throw new TimeoutException("Instance did not get public IP within timeout.");
+    }
+
+    private async Task AssociateElasticIpWithRetryAsync(string instanceId, string allocationId)
+    {
+        int maxRetries = 5;
+        int retryDelaySeconds = 10;
+
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                Console.WriteLine($"[AdDcProvisioner] Associating Elastic IP - attempt {attempt}/{maxRetries}");
+                await AssociateElasticIpAsync(instanceId, allocationId);
+                return;
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("not in a valid state"))
+            {
+                if (attempt < maxRetries)
+                {
+                    Console.WriteLine($"[AdDcProvisioner] Instance not ready yet, retrying in {retryDelaySeconds}s...");
+                    await Task.Delay(TimeSpan.FromSeconds(retryDelaySeconds));
+                }
+                else
+                {
+                    throw;
+                }
+            }
+        }
     }
 
     private async Task AssociateElasticIpAsync(string instanceId, string allocationId)
