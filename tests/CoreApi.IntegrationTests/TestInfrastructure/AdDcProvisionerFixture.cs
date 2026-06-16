@@ -273,16 +273,14 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             }
         }
 
-        // Pass UserData as base64-encoded string
-        // AWS CLI will send it to EC2 as-is (doesn't re-encode base64)
-        string userDataBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(BuildUserDataScript()));
+        // Don't use --user-data (EC2Launch v2 doesn't decode base64 properly)
+        // Instead, launch bare instance and execute script via SSM RunCommand after
         var args = new List<string>
         {
             "ec2", "run-instances",
             "--image-id", _options.AmiId,
             "--instance-type", _options.InstanceType,
             "--security-group-ids", _options.SecurityGroupId,
-            "--user-data", userDataBase64,
             "--tag-specifications", "ResourceType=instance,Tags=[{Key=Name,Value=coreapi-test-dc},{Key=coreapi-managed,Value=true}]",
             "--region", _options.AwsRegion
         };
@@ -307,6 +305,12 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         string instanceId = await QueryAwsAsync("Instances[0].InstanceId", args.ToArray());
 
         await WaitForInstanceStateAsync(instanceId, "running");
+
+        // Execute AD DS promotion script via SSM RunCommand (bypasses EC2Launch v2 base64 issue)
+        Console.WriteLine($"[AdDcProvisioner] Executing AD DS promotion via SSM RunCommand...");
+        await ExecuteUserDataViaSSMAsync(instanceId);
+        Console.WriteLine($"[AdDcProvisioner] ✓ AD DS promotion script executed");
+
         return instanceId;
     }
 
@@ -325,6 +329,49 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         {
             return null;
         }
+    }
+
+    private async Task ExecuteUserDataViaSSMAsync(string instanceId)
+    {
+        // Use AWS Systems Manager Run Command to execute the PowerShell script
+        // This bypasses EC2Launch v2 base64 decoding issues
+        string script = BuildUserDataScript().Replace("<powershell>", "").Replace("</powershell>", "").Trim();
+
+        // Create SSM document with the script
+        await InvokeAwsAsync("ssm", "send-command",
+            "--document-name", "AWS-RunPowerShellScript",
+            "--parameters", $"commands={script}",
+            "--instance-ids", instanceId,
+            "--region", _options.AwsRegion);
+
+        // Wait for command to complete (timeout 30 min)
+        DateTime start = DateTime.UtcNow;
+        DateTime lastLogTime = start;
+        while (DateTime.UtcNow - start < TimeSpan.FromMinutes(30))
+        {
+            // Check command status
+            string status = await QueryAwsAsync(
+                "Command.Status",
+                "ssm", "list-commands",
+                "--instance-id", instanceId,
+                "--region", _options.AwsRegion,
+                "--query", "Commands[0].Status");
+
+            if (status == "Success")
+                return;
+            if (status == "Failed")
+                throw new InvalidOperationException("SSM command failed");
+
+            if (DateTime.UtcNow - lastLogTime > TimeSpan.FromSeconds(30))
+            {
+                int elapsed = (int)(DateTime.UtcNow - start).TotalSeconds;
+                Console.WriteLine($"[AdDcProvisioner] SSM execution progress... ({elapsed}s elapsed)");
+                lastLogTime = DateTime.UtcNow;
+            }
+
+            await Task.Delay(10000);
+        }
+        throw new TimeoutException("SSM command execution timeout");
     }
 
     private string BuildUserDataScript() => $$"""
