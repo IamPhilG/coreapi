@@ -337,32 +337,55 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         // This bypasses EC2Launch v2 base64 decoding issues
         string script = BuildUserDataScript().Replace("<powershell>", "").Replace("</powershell>", "").Trim();
 
-        // Send SSM command
+        // Send SSM command with timeout
         Console.WriteLine($"[AdDcProvisioner] Sending SSM RunCommand for AD DS promotion...");
-        string commandOutput = await QueryAwsAsync(
-            "Command.CommandId",
-            "ssm", "send-command",
-            "--document-name", "AWS-RunPowerShellScript",
-            "--parameters", $"commands={script}",
-            "--instance-ids", instanceId,
-            "--region", _options.AwsRegion,
-            "--output", "json");
+        string? commandId = null;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            string commandOutput = await QueryAwsAsync(
+                "Command.CommandId",
+                "ssm", "send-command",
+                "--document-name", "AWS-RunPowerShellScript",
+                "--parameters", $"commands={script}",
+                "--instance-ids", instanceId,
+                "--region", _options.AwsRegion,
+                "--output", "json");
 
-        string commandId = commandOutput.Trim();
-        Console.WriteLine($"[AdDcProvisioner] SSM Command ID: {commandId}");
+            commandId = commandOutput.Trim();
+            Console.WriteLine($"[AdDcProvisioner] ✓ SSM Command sent, ID: {commandId}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AdDcProvisioner] ✗ Failed to send SSM command: {ex.Message}");
+            throw;
+        }
+
+        if (string.IsNullOrEmpty(commandId))
+            throw new InvalidOperationException("SSM command ID is empty");
 
         // Wait for command to complete (timeout 30 min)
+        Console.WriteLine($"[AdDcProvisioner] Polling SSM command status (30 min timeout)...");
         DateTime start = DateTime.UtcNow;
         DateTime lastLogTime = start;
         while (DateTime.UtcNow - start < TimeSpan.FromMinutes(30))
         {
             // Check invocation status
-            string status = await QueryAwsAsync(
-                "CommandInvocations[0].Status",
-                "ssm", "list-command-invocations",
-                "--command-id", commandId,
-                "--instance-id", instanceId,
-                "--region", _options.AwsRegion);
+            string? status = null;
+            try
+            {
+                status = await QueryAwsAsync(
+                    "CommandInvocations[0].Status",
+                    "ssm", "list-command-invocations",
+                    "--command-id", commandId,
+                    "--instance-id", instanceId,
+                    "--region", _options.AwsRegion);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AdDcProvisioner] Error checking SSM status: {ex.Message}");
+                throw;
+            }
 
             if (status == "Success")
             {
