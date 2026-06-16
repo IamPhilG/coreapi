@@ -273,18 +273,23 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             }
         }
 
-        // AWS CLI automatically base64-encodes user-data, so pass the script directly
-        // (don't pre-encode to base64 or you get double-encoding → EC2Launch can't parse)
-        var args = new List<string>
+        // UserData is large (several KB), so pass via file:// instead of command-line arg
+        // AWS CLI reads the file and base64-encodes it automatically
+        string userDataFile = Path.GetTempFileName();
+        try
         {
-            "ec2", "run-instances",
-            "--image-id", _options.AmiId,
-            "--instance-type", _options.InstanceType,
-            "--security-group-ids", _options.SecurityGroupId,
-            "--user-data", BuildUserDataScript(),
-            "--tag-specifications", "ResourceType=instance,Tags=[{Key=Name,Value=coreapi-test-dc},{Key=coreapi-managed,Value=true}]",
-            "--region", _options.AwsRegion
-        };
+            File.WriteAllText(userDataFile, BuildUserDataScript());
+
+            var args = new List<string>
+            {
+                "ec2", "run-instances",
+                "--image-id", _options.AmiId,
+                "--instance-type", _options.InstanceType,
+                "--security-group-ids", _options.SecurityGroupId,
+                "--user-data", $"file://{userDataFile}",
+                "--tag-specifications", "ResourceType=instance,Tags=[{Key=Name,Value=coreapi-test-dc},{Key=coreapi-managed,Value=true}]",
+                "--region", _options.AwsRegion
+            };
 
         if (!string.IsNullOrEmpty(_options.SubnetId))
         {
@@ -298,15 +303,21 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             args.Add(_options.KeyPairName);
         }
 
-        if (!string.IsNullOrEmpty(_options.IamInstanceProfile))
-        {
-            args.Add($"--iam-instance-profile=Name={_options.IamInstanceProfile}");
+            if (!string.IsNullOrEmpty(_options.IamInstanceProfile))
+            {
+                args.Add($"--iam-instance-profile=Name={_options.IamInstanceProfile}");
+            }
+
+            string instanceId = await QueryAwsAsync("Instances[0].InstanceId", args.ToArray());
+
+            await WaitForInstanceStateAsync(instanceId, "running");
+            return instanceId;
         }
-
-        string instanceId = await QueryAwsAsync("Instances[0].InstanceId", args.ToArray());
-
-        await WaitForInstanceStateAsync(instanceId, "running");
-        return instanceId;
+        finally
+        {
+            try { File.Delete(userDataFile); }
+            catch { }
+        }
     }
 
     private async Task<string?> TryGetInstanceIdForElasticIpAsync(string allocationId)
