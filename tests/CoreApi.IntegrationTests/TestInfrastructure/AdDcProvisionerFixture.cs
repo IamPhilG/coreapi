@@ -540,16 +540,41 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         catch { /* Best effort cleanup only. */ }
     }
 
+    // LDAP port 389 opens as soon as the LDAP service starts, but the auth subsystem
+    // (SAM/NETLOGON/KDC) can take a short while longer to stabilize after the post-DCPROMO
+    // reboot on a freshly promoted forest -- a simple bind attempted immediately can fail
+    // even with correct credentials. Retry with backoff instead of failing on the first try.
+    // Note: this also means a genuinely wrong/mismatched password takes the full timeout to
+    // surface as an error, since CanBindAsync can't distinguish "not ready yet" from "bad
+    // credentials" from outside the LDAP client.
     private async Task VerifyAdministratorCredentialsAsync(string host)
     {
         string user = $"Administrator@{_options.DomainName}";
-        if (await CanBindAsync(host, user, _options.AdAdminPassword))
-            return;
+        DateTime startTime = DateTime.UtcNow;
+        DateTime lastLogTime = startTime;
 
-        throw new InvalidOperationException(
-            $"LDAP port 389 is open on {host}, but binding as {user} failed. " +
-            "For Spec 0, a forgotten or mismatched AD password is not repaired in place. " +
-            "Redeploy/recreate the test DC with tools\\setup-test-dc.ps1 so configuration and domain state match.");
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        while (true)
+        {
+            if (await CanBindAsync(host, user, _options.AdAdminPassword))
+                return;
+
+            if (cts.Token.IsCancellationRequested)
+                throw new InvalidOperationException(
+                    $"LDAP port 389 is open on {host}, but binding as {user} still fails after 5 minutes of retries. " +
+                    "For Spec 0, a forgotten or mismatched AD password is not repaired in place. " +
+                    "Redeploy/recreate the test DC with tools\\setup-test-dc.ps1 so configuration and domain state match.");
+
+            if (DateTime.UtcNow - lastLogTime > TimeSpan.FromSeconds(30))
+            {
+                int elapsed = (int)(DateTime.UtcNow - startTime).TotalSeconds;
+                Console.WriteLine($"[AdDcProvisioner] Bind as {user} not ready yet, retrying... ({elapsed}s elapsed)");
+                lastLogTime = DateTime.UtcNow;
+            }
+
+            try { await Task.Delay(TimeSpan.FromSeconds(10), cts.Token); }
+            catch (OperationCanceledException) { /* loop will observe cts.Token.IsCancellationRequested and throw above */ }
+        }
     }
 
     private static async Task<bool> CanBindAsync(string host, string user, string password)
