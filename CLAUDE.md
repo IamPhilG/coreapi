@@ -5,9 +5,9 @@
 Read these files at the start of every session before doing any work:
 
 - [.claude/memory/user_profile.md](.claude/memory/user_profile.md)
-- [knowledge-base/active/coreapi/project-goal.md](knowledge-base/active/coreapi/project-goal.md)
+- [knowledge-base/active/coreapi/project-goal.json](knowledge-base/active/coreapi/project-goal.json)
 - [.claude/memory/feedback_no_writes_outside_repo.md](.claude/memory/feedback_no_writes_outside_repo.md)
-- [knowledge-base/active/ad-ds/reference.md](knowledge-base/active/ad-ds/reference.md)
+- [knowledge-base/active/ad-ds/reference.json](knowledge-base/active/ad-ds/reference.json)
 
 ---
 
