@@ -3,6 +3,7 @@ using System.DirectoryServices.Protocols;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 
 namespace CoreApi.IntegrationTests.TestInfrastructure;
@@ -117,6 +118,10 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         Console.WriteLine($"[AdDcProvisioner] Waiting for LDAP (AD DS promotion)... (timeout: {_options.LdapReadyTimeoutSeconds}s)");
         await WaitForLdapAsync(publicIp);
         Console.WriteLine($"[AdDcProvisioner] ✓ LDAP port 389 responding - AD DS ready");
+
+        Console.WriteLine("[AdDcProvisioner] Verifying AD Administrator bind credentials...");
+        await VerifyAdministratorCredentialsAsync(publicIp);
+        Console.WriteLine("[AdDcProvisioner] ✓ AD Administrator bind credentials verified");
 
         ResolvedHost = publicIp;
         ResolvedBaseDn = DomainNameToBaseDn(_options.DomainName);
@@ -260,6 +265,10 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         if (string.IsNullOrEmpty(_options.AdAdminPassword))
             throw new InvalidOperationException(
                 "TestInfrastructure:AdAdminPassword is required.");
+        if (string.IsNullOrEmpty(_options.IamInstanceProfile))
+            throw new InvalidOperationException(
+                "TestInfrastructure:IamInstanceProfile is required because AD DS promotion is executed via SSM RunCommand. " +
+                "Run 'tools\\setup-test-dc.ps1' to create the IAM role and instance profile.");
 
         // Check if an instance with the Elastic IP is already running (idempotent).
         if (!string.IsNullOrEmpty(_options.ElasticIpAllocationId))
@@ -268,7 +277,30 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             if (existingId is not null)
             {
                 Console.WriteLine(
-                    $"[AdDcProvisioner] Instance {existingId} already has Elastic IP {_options.ElasticIpAllocationId}. Reusing.");
+                    $"[AdDcProvisioner] Instance {existingId} already has Elastic IP {_options.ElasticIpAllocationId}. Checking readiness.");
+                string state = await GetInstanceStateAsync(existingId);
+                if (state == "stopped")
+                {
+                    await StartExistingInstanceAsync(existingId);
+                }
+                else if (state != "running")
+                {
+                    throw new InvalidOperationException(
+                        $"Instance {existingId} has Elastic IP {_options.ElasticIpAllocationId} but is in state '{state}'. " +
+                        "Terminate it or wait for it to become stable before rerunning integration tests.");
+                }
+
+                string publicIp = await WaitForPublicIpAsync(existingId);
+                if (await CanConnectTcpAsync(publicIp, 389, TimeSpan.FromSeconds(5)))
+                {
+                    Console.WriteLine($"[AdDcProvisioner] ✓ Existing instance already responds on LDAP port 389. Reusing.");
+                    return existingId;
+                }
+
+                Console.WriteLine($"[AdDcProvisioner] Existing instance does not respond on LDAP port 389; running AD DS promotion via SSM.");
+                await AssertIamInstanceProfileAttachedAsync(existingId);
+                await WaitForSsmOnlineAsync(existingId);
+                await ExecuteUserDataViaSSMAsync(existingId);
                 return existingId;
             }
         }
@@ -299,12 +331,15 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
 
         if (!string.IsNullOrEmpty(_options.IamInstanceProfile))
         {
-            args.Add($"--iam-instance-profile=Name={_options.IamInstanceProfile}");
+            args.Add("--iam-instance-profile");
+            args.Add($"Name={_options.IamInstanceProfile}");
         }
 
         string instanceId = await QueryAwsAsync("Instances[0].InstanceId", args.ToArray());
 
         await WaitForInstanceStateAsync(instanceId, "running");
+        await AssertIamInstanceProfileAttachedAsync(instanceId);
+        await WaitForSsmOnlineAsync(instanceId);
 
         // Execute AD DS promotion script via SSM RunCommand (bypasses EC2Launch v2 base64 issue)
         Console.WriteLine($"[AdDcProvisioner] Executing AD DS promotion via SSM RunCommand...");
@@ -331,14 +366,76 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         }
     }
 
+    private async Task AssertIamInstanceProfileAttachedAsync(string instanceId)
+    {
+        string arn = await QueryAwsAsync(
+            "Reservations[0].Instances[0].IamInstanceProfile.Arn",
+            "ec2", "describe-instances", "--instance-ids", instanceId,
+            "--region", _options.AwsRegion);
+
+        if (string.IsNullOrEmpty(arn) || arn == "None")
+            throw new InvalidOperationException(
+                $"Instance {instanceId} does not have an IAM instance profile attached. " +
+                $"Expected '{_options.IamInstanceProfile}' so the SSM agent can register. " +
+                "Terminate the instance and re-run the setup after fixing the launch arguments.");
+
+        Console.WriteLine($"[AdDcProvisioner] ✓ IAM instance profile attached: {arn}");
+    }
+
+    private async Task WaitForSsmOnlineAsync(string instanceId)
+    {
+        Console.WriteLine($"[AdDcProvisioner] Waiting for SSM managed instance to come online: {instanceId}...");
+        DateTime startTime = DateTime.UtcNow;
+        DateTime lastLogTime = startTime;
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+        while (!cts.Token.IsCancellationRequested)
+        {
+            string pingStatus = await QueryAwsAsync(
+                $"InstanceInformationList[?InstanceId=='{instanceId}'].PingStatus | [0]",
+                "ssm", "describe-instance-information",
+                "--region", _options.AwsRegion);
+
+            if (pingStatus == "Online")
+            {
+                Console.WriteLine($"[AdDcProvisioner] ✓ SSM managed instance online");
+                return;
+            }
+
+            if (DateTime.UtcNow - lastLogTime > TimeSpan.FromSeconds(30))
+            {
+                int elapsed = (int)(DateTime.UtcNow - startTime).TotalSeconds;
+                string status = string.IsNullOrEmpty(pingStatus) || pingStatus == "None"
+                    ? "not registered"
+                    : pingStatus;
+                Console.WriteLine($"[AdDcProvisioner] Still waiting for SSM... (status: {status}, {elapsed}s elapsed)");
+                lastLogTime = DateTime.UtcNow;
+            }
+
+            try { await Task.Delay(TimeSpan.FromSeconds(10), cts.Token); }
+            catch (OperationCanceledException)
+            {
+                throw new TimeoutException(
+                    $"Instance {instanceId} did not become an SSM managed instance within 15 minutes. " +
+                    "Check that the IAM instance profile has AmazonSSMManagedInstanceCore and that the instance can reach SSM endpoints.");
+            }
+        }
+    }
+
     private async Task ExecuteUserDataViaSSMAsync(string instanceId)
     {
         // Use AWS Systems Manager Run Command to execute the PowerShell script
         // This bypasses EC2Launch v2 base64 decoding issues
         string script = BuildUserDataScript().Replace("<powershell>", "").Replace("</powershell>", "").Trim();
+        await ExecutePowerShellViaSSMAsync(instanceId, script, "AD DS promotion");
+    }
+
+    private async Task ExecutePowerShellViaSSMAsync(string instanceId, string script, string operationName)
+    {
+        string payloadPath = WriteSsmCommandPayload(instanceId, script);
 
         // Send SSM command with timeout
-        Console.WriteLine($"[AdDcProvisioner] Sending SSM RunCommand for AD DS promotion...");
+        Console.WriteLine($"[AdDcProvisioner] Sending SSM RunCommand for {operationName}...");
         string? commandId = null;
         try
         {
@@ -346,9 +443,7 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             string commandOutput = await QueryAwsAsync(
                 "Command.CommandId",
                 "ssm", "send-command",
-                "--document-name", "AWS-RunPowerShellScript",
-                "--parameters", $"commands={script}",
-                "--instance-ids", instanceId,
+                "--cli-input-json", $"file://{payloadPath}",
                 "--region", _options.AwsRegion,
                 "--output", "json");
 
@@ -359,6 +454,10 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         {
             Console.WriteLine($"[AdDcProvisioner] ✗ Failed to send SSM command: {ex.Message}");
             throw;
+        }
+        finally
+        {
+            TryDeleteTempFile(payloadPath);
         }
 
         if (string.IsNullOrEmpty(commandId))
@@ -389,7 +488,7 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
 
             if (status == "Success")
             {
-                Console.WriteLine($"[AdDcProvisioner] ✓ SSM command completed successfully");
+                Console.WriteLine($"[AdDcProvisioner] ✓ SSM command completed successfully: {operationName}");
                 return;
             }
             if (status == "Failed")
@@ -414,6 +513,65 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
         }
         throw new TimeoutException("SSM command execution timeout (30 min)");
     }
+
+    private string WriteSsmCommandPayload(string instanceId, string script)
+    {
+        var payload = new
+        {
+            DocumentName = "AWS-RunPowerShellScript",
+            InstanceIds = new[] { instanceId },
+            Parameters = new Dictionary<string, string[]>
+            {
+                ["commands"] = new[] { script }
+            }
+        };
+
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"coreapi-ad-ds-ssm-{Guid.NewGuid():N}.json");
+        string json = JsonSerializer.Serialize(payload);
+        File.WriteAllText(path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        return path;
+    }
+
+    private static void TryDeleteTempFile(string path)
+    {
+        try { File.Delete(path); }
+        catch { /* Best effort cleanup only. */ }
+    }
+
+    private async Task VerifyAdministratorCredentialsAsync(string host)
+    {
+        string user = $"Administrator@{_options.DomainName}";
+        if (await CanBindAsync(host, user, _options.AdAdminPassword))
+            return;
+
+        throw new InvalidOperationException(
+            $"LDAP port 389 is open on {host}, but binding as {user} failed. " +
+            "For Spec 0, a forgotten or mismatched AD password is not repaired in place. " +
+            "Redeploy/recreate the test DC with tools\\setup-test-dc.ps1 so configuration and domain state match.");
+    }
+
+    private static async Task<bool> CanBindAsync(string host, string user, string password)
+    {
+        try
+        {
+            var identifier = new LdapDirectoryIdentifier(host, 389);
+            using var conn = new LdapConnection(identifier);
+            conn.Credential = new NetworkCredential(user, password);
+            conn.AuthType = AuthType.Basic;
+            conn.SessionOptions.ProtocolVersion = 3;
+            await Task.Run(conn.Bind);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string EscapePowerShellSingleQuotedString(string value) =>
+        value.Replace("'", "''");
 
     private string BuildUserDataScript() => $$"""
         <powershell>
@@ -460,61 +618,47 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
             Add-Content $logFile "$(Get-Date): AD-Domain-Services role installed"
 
             # ════════════════════════════════════════════════════════════════════════
-            # Step 4: Create DCPROMO answer file (unattended promotion)
+            # Step 4: Import AD DS deployment tooling
             # ════════════════════════════════════════════════════════════════════════
-            Add-Content $logFile "$(Get-Date): [4/6] Creating DCPROMO answer file..."
-            $nl = [Environment]::NewLine
-            $answerFile = "[DCINSTALL]" + $nl + `
-                "; Unattended forest promotion answer file" + $nl + `
-                "AutoConfigDNS=1" + $nl + `
-                "CreateDNSDelegation=0" + $nl + `
-                "DatabasePath=`"C:\Windows\NTDS`"" + $nl + `
-                "LogPath=`"C:\Windows\NTDS`"" + $nl + `
-                "SYSVOLPath=`"C:\Windows\SYSVOL`"" + $nl + `
-                "SiteName=`"Default-First-Site-Name`"" + $nl + `
-                "InstallDNS=Yes" + $nl + `
-                "AllowAnonymousAccess=No" + $nl + `
-                "DomainNetBiosName={{_options.DomainNetbiosName}}" + $nl + `
-                "DomainName={{_options.DomainName}}" + $nl + `
-                "ForestFunctionality=2012R2" + $nl + `
-                "DomainFunctionality=2012R2" + $nl + `
-                "ReplicaOrNewDomain=Forest" + $nl + `
-                "NewDNSName={{_options.DomainName}}" + $nl + `
-                "SafeModeAdminPassword={{_options.AdAdminPassword}}" + $nl + `
-                "RebootOnCompletion=Yes"
-            $answerFile | Set-Content -Path "C:\Windows\System32\dcpromo.answer" -Encoding ASCII
-            Add-Content $logFile "$(Get-Date): DCPROMO answer file created at C:\Windows\System32\dcpromo.answer"
+            Add-Content $logFile "$(Get-Date): [4/6] Importing ADDSDeployment module..."
+            Import-Module ADDSDeployment
+            Add-Content $logFile "$(Get-Date): ADDSDeployment module imported"
 
             # ════════════════════════════════════════════════════════════════════════
-            # Step 5: Execute DCPROMO with answer file (unattended)
+            # Step 5: Promote to a new forest
             # ════════════════════════════════════════════════════════════════════════
-            Add-Content $logFile "$(Get-Date): [5/6] Executing DCPROMO for forest promotion..."
+            Add-Content $logFile "$(Get-Date): [5/6] Promoting server to a new AD DS forest..."
             Add-Content $logFile "$(Get-Date): Domain: {{_options.DomainName}}, NetBIOS: {{_options.DomainNetbiosName}}"
 
-            $dcpromoProcess = Start-Process -FilePath "dcpromo.exe" `
-                -ArgumentList '/answer:"C:\Windows\System32\dcpromo.answer" /unattend' `
-                -NoNewWindow -PassThru -RedirectStandardOutput "C:\dcpromo.log"
-
-            $dcpromoProcess.WaitForExit()
-            $dcpromoExitCode = $dcpromoProcess.ExitCode
-
-            Add-Content $logFile "$(Get-Date): DCPROMO exited with code: $dcpromoExitCode"
-
-            if (Test-Path "C:\dcpromo.log") {
-                Get-Content "C:\dcpromo.log" | Add-Content $logFile
+            Add-Content $logFile "$(Get-Date): Setting local Administrator password before promotion..."
+            net user Administrator '{{EscapePowerShellSingleQuotedString(_options.AdAdminPassword)}}' /active:yes
+            if ($LASTEXITCODE -ne 0) {
+                throw "net user Administrator password setup failed with exit code $LASTEXITCODE"
             }
 
-            if ($dcpromoExitCode -ne 0 -and $dcpromoExitCode -ne 3010) {
-                throw "DCPROMO failed with exit code $dcpromoExitCode (3010 = success with reboot required)"
-            }
+            $safeModePassword = ConvertTo-SecureString '{{EscapePowerShellSingleQuotedString(_options.AdAdminPassword)}}' -AsPlainText -Force
+            Install-ADDSForest `
+                -DomainName "{{_options.DomainName}}" `
+                -DomainNetbiosName "{{_options.DomainNetbiosName}}" `
+                -SafeModeAdministratorPassword $safeModePassword `
+                -InstallDns `
+                -CreateDnsDelegation:$false `
+                -DatabasePath "C:\Windows\NTDS" `
+                -LogPath "C:\Windows\NTDS" `
+                -SysvolPath "C:\Windows\SYSVOL" `
+                -ForestMode Win2012R2 `
+                -DomainMode Win2012R2 `
+                -NoRebootOnCompletion:$true `
+                -Force | Out-String | Add-Content $logFile
 
             Add-Content $logFile "$(Get-Date): [6/6] Forest promotion completed successfully. System will reboot."
-            Add-Content $logFile "$(Get-Date): DCPROMO will trigger automatic restart. Expect DC online in 2-5 minutes after reboot."
+            Add-Content $logFile "$(Get-Date): Scheduling reboot so SSM can report success before restart. Expect DC online in 2-5 minutes after reboot."
+            shutdown.exe /r /t 20 /c "CoreApi AD DS promotion complete"
 
         } catch {
             Add-Content $logFile "$(Get-Date): ❌ ERROR: $_"
             Add-Content $logFile "$(Get-Date): Stack trace: $($_.ScriptStackTrace)"
-            Add-Content $logFile "$(Get-Date): Check C:\dcpromo.log and C:\Windows\debug\dcpromo.log for details"
+            Add-Content $logFile "$(Get-Date): Check C:\AddsSetup.log and C:\Windows\debug\dcpromo.log for details"
             throw
         }
         </powershell>
@@ -671,6 +815,21 @@ public sealed class AdDcProvisionerFixture : IAsyncLifetime
     {
         await InvokeAwsAsync("ec2", "stop-instances", "--instance-ids", instanceId,
             "--region", _options.AwsRegion);
+    }
+
+    private static async Task<bool> CanConnectTcpAsync(string host, int port, TimeSpan timeout)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(timeout);
+            using var tcp = new TcpClient();
+            await tcp.ConnectAsync(host, port, cts.Token);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     // -- Validation --

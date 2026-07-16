@@ -1,13 +1,41 @@
 ---
 name: spec-0-handoff
 date: 2026-06-16
-status: PAUSED - BLOCKED ON USERDATA DELIVERY
+status: RESOLVED (2026-07-16)
 assigned-to: next-session
 ---
 
 # Spec 0 Handoff — EC2 AD DS Auto-Provisioner
 
-## Current Status
+## Resolution (2026-07-16)
+
+Option 4 (SSM RunCommand) from the recovery plan below is confirmed working end-to-end:
+EC2 launch → IAM instance profile → SSM agent online → AD DS promotion via
+`AWS-RunPowerShellScript` → LDAP port 389 → credential bind verification. Both
+`DirectoryConnectionTests` integration tests pass against a freshly promoted DC.
+
+Two fixes were needed beyond what's described below:
+
+1. **SSM status polling never progressed** (see "SSM RunCommand approach also failed"):
+   root cause was sending the SSM command before the SSM agent had registered as an
+   online managed instance. Fixed by polling `ssm describe-instance-information` for
+   `PingStatus=Online` before `send-command`.
+2. **LDAP bind format**: a WIP change had switched the bind username from UPN
+   (`Administrator@corp.local`) to NetBIOS (`CORP\Administrator`). AD DS simple bind
+   (`AuthType.Basic`) does not accept the NetBIOS `DOMAIN\user` form — only a full DN or
+   UPN. Reverted to UPN; confirmed via `Get-ADDomain` over SSM (without transmitting the
+   password through SSM command history) that the promotion itself was healthy before
+   making this fix.
+
+Operating model going forward: instances are provisioned on demand for a QA/integration
+run and terminated afterward (Elastic IP released) rather than kept running between
+sessions, to avoid idle EC2/EIP cost. For active development against a live DC, provision
+one via `tools\setup-test-dc.ps1 -Mode demo` and keep it running for the duration of that
+work.
+
+---
+
+## Current Status (original — 2026-06-16, superseded above)
 
 **PAUSED** — Core infrastructure works but UserData script never executes on EC2 instance.
 

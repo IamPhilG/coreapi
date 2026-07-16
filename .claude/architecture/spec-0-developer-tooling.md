@@ -237,6 +237,16 @@ Get-Service DNS
 
 **Workaround:** Increase timeout to 45 min if experiencing this.
 
+### Issue 4: Forgotten or Mismatched AD Administrator Password
+
+**Symptom:** LDAP port 389 responds, but bind fails with "The supplied credential is invalid."
+
+**Root Cause:** The configured `AdAdminPassword` no longer matches the domain Administrator account on the test DC.
+
+**Required response:** Redeploy/recreate the Spec 0 test DC. Do not repair/reset the AD password in place. Spec 0 treats the DC as disposable developer infrastructure; password drift means local configuration and domain state no longer match.
+
+**Fix:** Re-run `tools\setup-test-dc.ps1 -AwsProfile default -Mode test` and choose the fresh/recreate path.
+
 ## Testing Strategy
 
 ### Unit Tests
@@ -295,4 +305,3 @@ Get-Service DNS
 **Document Version:** 1.0  
 **Last Updated:** 2026-06-15  
 **Status:** In Progress (AD DS promotion working, demo seeding pending)
-
