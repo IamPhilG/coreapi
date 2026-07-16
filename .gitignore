@@ -492,3 +492,6 @@ tests/**/appsettings.Development.json
 
 # EC2 key pairs for RDP access
 .ssh/
+
+# Dev-only JWT signing keypair (Spec 3) — never commit, regenerated on first tool run
+tools/DevTokenMinter/dev-signing-key.*.pem
