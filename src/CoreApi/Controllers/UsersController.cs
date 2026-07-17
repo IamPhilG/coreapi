@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using CoreApi.Models;
 using CoreApi.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -8,10 +9,18 @@ namespace CoreApi.Controllers;
 [ApiExplorerSettings(GroupName = "Users")]
 public sealed class UsersController(IUserService users) : BaseApiController
 {
-    /// <summary>Lists users under a given OU, or the configured directory base DN.</summary>
+    private const int DefaultPageSize = 100;
+    private const int MaxPageSize = 1000;
+
+    /// <summary>
+    /// Lists users under a given OU, or the configured directory base DN. There is no
+    /// continuation token yet -- a domain with more matches than <paramref name="pageSize"/>
+    /// requires narrowing <paramref name="ouPath"/>, not paging through the rest.
+    /// </summary>
     /// <param name="ouPath">Distinguished name of the container to search (optional; defaults to the configured base DN).</param>
+    /// <param name="pageSize">Maximum entries to return (1-1000, default 100).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The matching users.</returns>
+    /// <returns>The matching users, up to <paramref name="pageSize"/>.</returns>
     [HttpGet]
     [ProducesResponseType<IReadOnlyList<UserDto>>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -19,9 +28,11 @@ public sealed class UsersController(IUserService users) : BaseApiController
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<ActionResult<IReadOnlyList<UserDto>>> List(
-        [FromQuery] string? ouPath, CancellationToken cancellationToken)
+        [FromQuery] string? ouPath,
+        [FromQuery][Range(1, MaxPageSize)] int pageSize = DefaultPageSize,
+        CancellationToken cancellationToken = default)
     {
-        return Ok(await users.ListAsync(ouPath, cancellationToken));
+        return Ok(await users.ListAsync(ouPath, pageSize, cancellationToken));
     }
 
     /// <summary>Gets a single user by sAMAccountName.</summary>

@@ -64,7 +64,7 @@ public class UserServiceTests : IDisposable
             var fetched = await _userService.GetBySamAccountNameAsync(samAccountName);
             Assert.Equal(created.Guid, fetched.Guid);
 
-            var list = await _userService.ListAsync(_usersContainer);
+            var list = await _userService.ListAsync(_usersContainer, pageSize: 100);
             Assert.Contains(list, u => u.SamAccountName == samAccountName);
 
             var updated = await _userService.UpdateAsync(

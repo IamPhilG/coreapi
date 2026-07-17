@@ -19,7 +19,7 @@ public sealed class UserService(
         return MapToDto(entry);
     }
 
-    public async Task<IReadOnlyList<UserDto>> ListAsync(string? ouPath, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<UserDto>> ListAsync(string? ouPath, int pageSize, CancellationToken cancellationToken = default)
     {
         string baseDn = string.IsNullOrEmpty(ouPath) ? directoryOptions.Value.BaseDn : ouPath;
         EnsureWithinConfiguredBaseDn(baseDn);
@@ -29,6 +29,7 @@ public sealed class UserService(
             $"{UserFilterBase})",
             SearchScope.Subtree,
             attributes: UserAttributes,
+            maxResults: pageSize,
             cancellationToken: cancellationToken);
 
         return entries.Select(MapToDto).ToList();

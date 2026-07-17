@@ -10,6 +10,7 @@ public sealed class LdapDirectoryConnection : IDirectoryConnection, IDisposable
 {
     private readonly LdapConnection _connection;
     private readonly TimeSpan _timeout;
+    private readonly int _maxSearchResults;
     private readonly ILogger<LdapDirectoryConnection> _logger;
     private readonly CancellationTokenSource _shutdownCts = new();
     private readonly SemaphoreSlim _bindLock = new(1, 1);
@@ -23,6 +24,7 @@ public sealed class LdapDirectoryConnection : IDirectoryConnection, IDisposable
         _logger = logger;
         var opt = options.Value;
         _timeout = TimeSpan.FromSeconds(opt.TimeoutSeconds);
+        _maxSearchResults = opt.MaxSearchResults;
 
         var identifier = new LdapDirectoryIdentifier(opt.Host, opt.Port);
 
@@ -99,10 +101,12 @@ public sealed class LdapDirectoryConnection : IDirectoryConnection, IDisposable
         SearchScope scope,
         string[]? attributes = null,
         DirectoryControl[]? controls = null,
+        int? maxResults = null,
         CancellationToken cancellationToken = default)
     {
         var results = new List<SearchResultEntry>();
-        var pageControl = new PageResultRequestControl(pageSize: 1000);
+        int pageSize = maxResults is int m && m < 1000 ? m : 1000;
+        var pageControl = new PageResultRequestControl(pageSize);
 
         do
         {
@@ -120,6 +124,28 @@ public sealed class LdapDirectoryConnection : IDirectoryConnection, IDisposable
 
             foreach (SearchResultEntry entry in response.Entries)
                 results.Add(entry);
+
+            if (maxResults is int cap)
+            {
+                // Caller asked for a bounded page (e.g. an HTTP list endpoint) -- reaching the
+                // cap is a normal stopping point, not an error. Trim in case the last page
+                // overshot it.
+                if (results.Count >= cap)
+                {
+                    if (results.Count > cap)
+                        results.RemoveRange(cap, results.Count - cap);
+                    return results;
+                }
+            }
+            else if (results.Count > _maxSearchResults)
+            {
+                // No explicit page requested -- this is a lookup expected to match a handful of
+                // entries at most (e.g. an exact sAMAccountName search). Matching this many is
+                // itself a sign something is wrong, so fail rather than silently truncate.
+                throw new SearchResultsLimitExceededException(
+                    $"Search on '{baseDn}' matched more than {_maxSearchResults} entries. " +
+                    "Narrow the query (e.g. a more specific base DN or filter) and retry.");
+            }
 
             var pageResponse = response.Controls
                 .OfType<PageResultResponseControl>()
