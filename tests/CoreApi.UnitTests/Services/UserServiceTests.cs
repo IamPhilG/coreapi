@@ -48,4 +48,29 @@ public class UserServiceTests
     {
         Assert.Equal(expectedEnabled, UserService.IsEnabled(userAccountControl));
     }
+
+    private const string BaseDn = "DC=corp,DC=local";
+
+    [Theory]
+    [Trait("Category", "Unit")]
+    [InlineData("DC=corp,DC=local", true)]              // the base DN itself
+    [InlineData("OU=Users,DC=corp,DC=local", true)]      // direct child
+    [InlineData("OU=IT,OU=Users,DC=corp,DC=local", true)] // nested descendant
+    [InlineData("dc=CORP,dc=LOCAL", true)]               // case-insensitive
+    public void IsDnWithinBaseDn_accepts_the_base_dn_and_its_descendants(string dn, bool expected)
+    {
+        Assert.Equal(expected, UserService.IsDnWithinBaseDn(dn, BaseDn));
+    }
+
+    [Theory]
+    [Trait("Category", "Unit")]
+    [InlineData("DC=other,DC=local")]                    // unrelated domain
+    [InlineData("OU=Users,DC=corp,DC=local,DC=evil")]     // suffix trick: doesn't end with the base DN
+    [InlineData("DC=notcorp,DC=local")]                   // similar but not a real match
+    public void IsDnWithinBaseDn_rejects_paths_outside_the_configured_scope(string dn)
+    {
+        // The scenario the missing check let through: a caller-supplied ouPath pointing
+        // anywhere the service account can reach, not just the domain this API administers.
+        Assert.False(UserService.IsDnWithinBaseDn(dn, BaseDn));
+    }
 }

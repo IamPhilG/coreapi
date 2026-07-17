@@ -22,6 +22,7 @@ public sealed class UserService(
     public async Task<IReadOnlyList<UserDto>> ListAsync(string? ouPath, CancellationToken cancellationToken = default)
     {
         string baseDn = string.IsNullOrEmpty(ouPath) ? directoryOptions.Value.BaseDn : ouPath;
+        EnsureWithinConfiguredBaseDn(baseDn);
 
         var entries = await connection.SearchAsync(
             baseDn,
@@ -35,7 +36,13 @@ public sealed class UserService(
 
     public async Task<UserDto> CreateAsync(CreateUserRequest request, CancellationToken cancellationToken = default)
     {
-        string cn = string.IsNullOrEmpty(request.DisplayName) ? request.SamAccountName : request.DisplayName;
+        EnsureWithinConfiguredBaseDn(request.OuPath);
+
+        // RFC 4514 RDN escaping -- a different rule set from LdapFilterEncoder (which protects
+        // search filters, not DN structure). Without it, a DisplayName containing a comma,
+        // backslash, or leading '#' would break out of the intended RDN.
+        string cn = LdapDnEncoder.EscapeRdnValue(
+            string.IsNullOrEmpty(request.DisplayName) ? request.SamAccountName : request.DisplayName);
         string dn = $"CN={cn},{request.OuPath}";
 
         var attributes = new List<DirectoryAttribute>
@@ -63,7 +70,9 @@ public sealed class UserService(
         }
         catch (DirectoryOperationException ex) when (ex.Response?.ResultCode == ResultCode.EntryAlreadyExists)
         {
-            throw new ConflictException($"A directory object already exists at '{dn}'.");
+            // Message intentionally doesn't echo the constructed DN or OU path -- doing so
+            // would let a caller map out the domain's container structure via collisions.
+            throw new ConflictException($"A user '{request.SamAccountName}' already exists.");
         }
 
         return await GetBySamAccountNameAsync(request.SamAccountName, cancellationToken);
@@ -111,6 +120,22 @@ public sealed class UserService(
     /// <summary>Inverse of the userAccountControl ACCOUNTDISABLE bit. Exposed for unit testing
     /// (see <see cref="BuildSamAccountNameFilter"/> for why).</summary>
     internal static bool IsEnabled(int userAccountControl) => (userAccountControl & AccountDisabled) == 0;
+
+    /// <summary>True when <paramref name="dn"/> is the configured base DN or a descendant of
+    /// it. Without this check, a caller-supplied ouPath (Create/List) could target or search
+    /// any container the service account can reach, regardless of what this API is meant to
+    /// administer. Exposed for unit testing (see <see cref="BuildSamAccountNameFilter"/> for
+    /// why).</summary>
+    internal static bool IsDnWithinBaseDn(string dn, string baseDn) =>
+        string.Equals(dn, baseDn, StringComparison.OrdinalIgnoreCase) ||
+        dn.EndsWith("," + baseDn, StringComparison.OrdinalIgnoreCase);
+
+    private void EnsureWithinConfiguredBaseDn(string dn)
+    {
+        string baseDn = directoryOptions.Value.BaseDn;
+        if (!IsDnWithinBaseDn(dn, baseDn))
+            throw new InvalidRequestException($"ouPath must be within the configured directory scope ('{baseDn}').");
+    }
 
     private async Task<SearchResultEntry> FindEntryAsync(string samAccountName, CancellationToken cancellationToken)
     {

@@ -14,6 +14,7 @@ public sealed class UsersController(IUserService users) : BaseApiController
     /// <returns>The matching users.</returns>
     [HttpGet]
     [ProducesResponseType<IReadOnlyList<UserDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]

@@ -20,6 +20,7 @@ public sealed class ProblemDetailsExceptionHandler : IExceptionHandler
         {
             NotFoundException => (StatusCodes.Status404NotFound, "Not Found", exception.Message),
             ConflictException => (StatusCodes.Status409Conflict, "Conflict", exception.Message),
+            InvalidRequestException => (StatusCodes.Status400BadRequest, "Bad Request", exception.Message),
             LdapException or DirectoryOperationException => (
                 StatusCodes.Status503ServiceUnavailable,
                 "Directory Unavailable",
