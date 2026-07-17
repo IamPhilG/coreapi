@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using CoreApi.Infrastructure;
 using CoreApi.Infrastructure.Conventions;
+using CoreApi.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc.ApplicationModels;
 using Microsoft.IdentityModel.Tokens;
@@ -27,9 +28,14 @@ builder.Services.AddSwaggerGen(options =>
         Description = "Paste a JWT access token — Swagger UI adds the \"Bearer \" prefix automatically."
     });
     options.OperationFilter<AuthorizeCheckOperationFilter>();
+
+    string xmlPath = Path.Combine(AppContext.BaseDirectory, $"{typeof(Program).Assembly.GetName().Name}.xml");
+    if (File.Exists(xmlPath))
+        options.IncludeXmlComments(xmlPath);
 });
 
 builder.Services.AddHealthChecks();
+builder.Services.AddExceptionHandler<ProblemDetailsExceptionHandler>();
 builder.Services.AddProblemDetails();
 
 // Jwt:Authority/Audience/Issuer are always required (fail-fast), even in Development where
@@ -98,6 +104,7 @@ builder.Services.AddOptions<DirectoryConnectionOptions>()
     .ValidateOnStart();
 
 builder.Services.AddSingleton<IDirectoryConnection, LdapDirectoryConnection>();
+builder.Services.AddScoped<IUserService, UserService>();
 
 var app = builder.Build();
 
