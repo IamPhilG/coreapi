@@ -45,15 +45,18 @@ Ce que coreapi fait systématiquement, sans exception, pour **chaque** action :
 
 ## Les trois plans (EAM), pas trois chemins
 
+*Définition générique du modèle EAM : voir knowledge-base `enterprise-access-model`. Ce qui
+suit est uniquement le mapping propre à coreapi.*
+
 Erreur initiale corrigée en session : un plan (où vit l'actif) et un chemin d'accès (comment
 on l'atteint/le gouverne) sont deux axes différents — pas la même chose, pas une
 correspondance 1-pour-1.
 
-| Plan | Ce qu'il contient | Specs coreapi concernées |
+| Plan EAM | Ce que coreapi y place | Specs coreapi concernées |
 |---|---|---|
-| **Data/Workload** | La quasi-totalité de ce que coreapi gère : comptes utilisateurs (Spec 4), comptes de service (Spec 5), groupes/OU ordinaires (Spec 6) — humain ou compte de service, peu importe, ce sont des actifs Data/Workload | Spec 4, 5, 6 |
-| **Management** | Les outils de gouvernance eux-mêmes (IIQ, ServiceNow, PAM) — c'est par ce plan que passe la gouvernance des actifs Data/Workload, pas un chemin séparé pour chaque type d'actif | N/A directement — c'est la source d'autorisation, pas une cible AD |
-| **Control** | Les systèmes qui contrôlent l'identité et la sécurité elles-mêmes — Domain Admins, Enterprise Admins, Schema Admins, OU Domain Controllers, la structure des ACL elle-même | Spec 7 (ACL), toute action touchant un groupe/objet Tier 0 |
+| **Data/Workload** | Comptes utilisateurs (Spec 4), comptes de service (Spec 5), groupes/OU ordinaires (Spec 6) — humain ou compte de service, peu importe | Spec 4, 5, 6 |
+| **Management** | N/A directement — c'est la source d'autorisation (IIQ, ServiceNow, PAM), pas une cible AD | — |
+| **Control** | Domain Admins, Enterprise Admins, Schema Admins, structure des ACL elle-même | Spec 7 (ACL), toute action touchant un groupe/objet Tier 0 |
 
 Point clé, initialement mal compris puis corrigé : **le Data/Workload plane est gouverné par
 le Management plane** — un compte de service (Data/Workload) et un utilisateur standard
@@ -89,6 +92,70 @@ Cette section capture la décision pour que Spec 7 la respecte dès sa conceptio
 | Data/Workload (Spec 4, 5, 6) | **Claim signé dans le JWT** — coreapi vérifie la signature et la présence du claim d'autorisation, ne valide pas le processus métier derrière | Le coût d'une vérification API-à-API systématique dépasse le bénéfice pour ce volume d'appels routiniers |
 | Control Plane / PAM / Tier 0 (Spec 7 et au-delà) | **Vérification API-à-API en direct**, coreapi vers l'API de la source d'autorisation | L'enjeu justifie la complexité additionnelle — c'est précisément le principe de proportionnalité de la sécurité, pas une négligence pour les autres niveaux |
 
+## Claim de confiance client et fiche d'intégration
+
+**Décision (résout le point "forme du claim JWT — Option A")** : pas de nouveau claim
+personnalisé. Réutilisation du claim `scope`/`scp` OAuth2 standard, déjà présent dans le
+pipeline de validation Spec 3 (confirmé sur un jeton Okta réel en session : `"scp":
+["coreapi.access"]`). Valeurs cibles, une par chemin d'exécution technique :
+
+- `coreapi.users.write` — chemin Utilisateur / Standard
+- `coreapi.service-accounts.write` — chemin Applicatif
+- `coreapi.control-plane.request` — chemin Privilégié (ce scope seul ne suffit pas : la
+  vérification API-à-API et le chemin réseau restent requis en plus, voir plus haut)
+
+### Qui émet le claim, et comment coreapi l'interprète
+
+L'IdP (Okta/Entra ou autre) émet le claim au moment de l'enregistrement du client appelant —
+mécanisme déjà exercé en session (assignation du scope `coreapi.access` à l'app de test dans
+Okta). Mais coreapi opère avec plusieurs consommateurs, potentiellement plusieurs IdP, qui ne
+nomment pas forcément leurs scopes de la même façon que coreapi. D'où la **fiche
+d'intégration** : un registre, un enregistrement par consommateur, qui traduit les claims
+entrants de ce consommateur vers l'ensemble d'attributs canoniques de coreapi.
+
+Contenu de la fiche :
+
+| Champ | Rôle |
+|---|---|
+| `appId` | Identifiant unique du consommateur (client_id), assigné à l'onboarding, immuable |
+| `status` | Active / Inactive / Décommissionnée — statut **technique** de l'habilitation à appeler coreapi, distinct de tout statut métier |
+| `claimMapping` | Règles traduisant le(s) claim(s) entrant(s) de ce consommateur vers les valeurs canoniques ci-dessus |
+| `piiDisclosureLevel` | GUID (défaut) ou DN (opt-in) — voir schéma du log SIEM plus bas |
+| `siemExtensionFields` | Attributs additionnels à joindre au log pour ce consommateur, au-delà du socle obligatoire |
+
+### Création/modification d'une fiche d'intégration — contrôle à deux jetons
+
+La fiche d'intégration est elle-même un contrôle de sécurité (un mapping malveillant pourrait
+élever silencieusement les droits d'un client) — sa création ne peut donc pas être un
+endpoint ouvert. Décision :
+
+- Seul un membre d'un groupe AD DS dédié, Tier 0/Control Plane, peut faire aboutir la création
+  ou la modification d'une fiche. L'appartenance à ce groupe exige elle-même une double
+  approbation IIQ (hors périmètre coreapi — coreapi ne fait qu'en dépendre).
+- L'action côté API n'est valide que si **deux jetons distincts** accompagnent la requête :
+  1. Un jeton IIQ portant la demande approuvée, avec en données le contenu proposé de la
+     fiche.
+  2. Un jeton d'approbation (ex. ServiceNow) attestant qu'un membre du groupe Tier 0 mentionné
+     ci-dessus a validé cette fiche précise.
+- Cette action emprunte le chemin d'exécution Privilégié déjà défini plus haut (pas un
+  mécanisme séparé), et produit un événement d'audit avec son propre `change_type` dans le
+  log SIEM (voir schéma plus bas) — cohérent avec le principe "aucune exception à l'audit."
+
+### Liaison entre les deux jetons — hash en V1, certificat en extension future
+
+**Décision** : les deux jetons doivent porter le même contenu de fiche de façon vérifiable,
+pour empêcher qu'une approbation valide soit présentée à côté d'un contenu substitué. V1 :
+**hash du corps de la fiche**, porté par les deux jetons, comparé par coreapi avant toute
+création/modification — c'est un minimum, pas une solution définitive.
+
+Une liaison par certificat (le jeton d'approbation signé directement sur le contenu exact de
+la fiche, pas seulement un hash comparé côté coreapi) est une amélioration future plausible,
+mais n'est pas un prérequis pour démarrer — comme pour le suivi multi-instance, ne pas
+bloquer le développement courant sur cette piste :
+- **`main`** — développement actif, liaison par hash uniquement
+- **`feature/integration-record-cert-binding`** — branche créée le 2026-07-18 pour la version
+  à liaison par certificat, à reprendre si le hash s'avère insuffisant en pratique
+
 ## Trois chemins d'exécution technique (câblage DI)
 
 Correction en session : réduire à deux chemins techniques (Standard / Control Plane) était
@@ -117,6 +184,10 @@ pas une variation de deux.
 
 ## Stratégie de credential — les trois comptes, pas seulement Control Plane
 
+*Définitions génériques (gMSA, zero standing access, secretless, isolation EC2 vs Fargate) :
+voir knowledge-base `zero-standing-access` et `ecs-fargate-task-isolation`. Ce qui suit est le
+choix propre à coreapi.*
+
 Correction en session : gMSA n'est pas une mesure réservée au chemin Control Plane — le
 principe "zéro secret statique" s'applique aux **trois** comptes de service que coreapi
 utilise (Standard, Applicatif, Privilégié). Aucun des trois ne doit avoir de mot de passe
@@ -124,20 +195,14 @@ classique connu d'un humain.
 
 ### Cible de déploiement (critère ajouté à Spec 9)
 
-**AWS ECS Fargate**, pas EC2 launch type. Raison : sur EC2, les tasks ECS partagent le même
-noyau hôte — "containers are not a security boundary" selon la documentation AWS elle-même,
-un conteneur compromis peut potentiellement atteindre les données d'autres tasks sur le même
-hôte. Sur Fargate, chaque task a sa propre micro-VM — frontière d'isolation réelle. Vu que
-coreapi est une passerelle privilégiée vers AD, cette isolation compte pour les trois chemins,
-pas seulement Control Plane. Fargate supporte gMSA nativement depuis mars 2024
-(`credentials-fetcher`), donc ce choix ne sacrifie rien côté gMSA.
+**AWS ECS Fargate**, pas EC2 launch type. Vu que coreapi est une passerelle privilégiée vers
+AD, l'isolation micro-VM par task compte pour les trois chemins, pas seulement Control Plane.
+Fargate supporte gMSA nativement depuis mars 2024, donc ce choix ne sacrifie rien côté gMSA.
 
 ### gMSA comme base pour les trois comptes
 
-Les trois comptes de service (Standard, Applicatif, Privilégié) sont des **gMSA** (Group
-Managed Service Account) — mot de passe géré et tourné automatiquement par AD, jamais connu
-d'un humain, pour aucun des trois. `credentials-fetcher` (daemon AWS) les récupère via LDAPS
-et produit un **ticket Kerberos**, pas un mot de passe brut, mis à disposition du conteneur.
+Les trois comptes de service (Standard, Applicatif, Privilégié) sont des gMSA — aucun des
+trois n'a de mot de passe classique connu d'un humain.
 
 ### Ce qui reste spécifique au Control Plane : le traitement JIT en plus du gMSA
 
@@ -161,12 +226,11 @@ trois comptes.
 
 ### Cible secretless
 
-Si le code utilise le ticket Kerberos déjà obtenu par `credentials-fetcher` plutôt qu'un mot
-de passe explicite, `LdapDirectoryConnection` doit basculer de `AuthType.Basic` (bind avec
-mot de passe explicite, comportement actuel) vers `AuthType.Negotiate` — pour **les trois**
-chemins, pas seulement Control Plane. Le processus coreapi ne manipule alors jamais de mot de
-passe en clair, à aucun moment, pour aucun des trois comptes. Implication code, pas seulement
-infra — à traiter au moment de l'implémentation de chaque chemin, pas avant.
+En utilisant le ticket Kerberos déjà obtenu par `credentials-fetcher` plutôt qu'un mot de
+passe explicite, `LdapDirectoryConnection` doit basculer de `AuthType.Basic` (comportement
+actuel) vers `AuthType.Negotiate` — pour **les trois** chemins, pas seulement Control Plane.
+Implication code, pas seulement infra — à traiter au moment de l'implémentation de chaque
+chemin, pas avant.
 
 ## Couche réseau — combinée, pas alternative
 
@@ -208,6 +272,41 @@ sont deux besoins différents qui n'ont pas à partager le même mécanisme :
   confirmé hors périmètre de coreapi — décision business/gouvernance, pas technique. coreapi
   ne vérifie ni ne consomme cette référence lui-même.
 
+### Format du log SIEM (résout "format exact du log — `CODE-03`")
+
+*Définition générique des modèles Splunk CIM utilisés ci-dessous : voir knowledge-base
+`splunk-cim-data-models` (statut `suspect` — à revalider contre l'instance Splunk cible avant
+implémentation).*
+
+Cible : Splunk, aligné sur le Common Information Model (CIM) pour que les détections et
+rapports de conformité déjà construits côté SOC reconnaissent nos événements sans parsing
+custom. Deux niveaux, pour maîtriser le volume :
+
+**1. Socle CIM obligatoire, toujours envoyé** — nos actions sont fondamentalement des
+événements de type *Change* (CRUD sur un objet AD) :
+
+| Champ | Contenu coreapi |
+|---|---|
+| `action` | create / update / delete / read |
+| `change_type` | Type d'objet affecté (user / group / ou / serviceAccount / acl / integrationRecord) |
+| `object` | `objectGUID` de la cible — **PII : GUID par défaut**, DN uniquement si la fiche d'intégration du consommateur l'autorise en opt-in (`piiDisclosureLevel`) |
+| `object_category`, `object_id`, `object_path` | Catégorie de l'objet, identifiant, chemin OU conteneur (pas le DN complet) |
+| `user` | Identité de l'appelant (`clientId`/`cid` du JWT — au sens CIM, `user` désigne qui agit, pas la cible) |
+| `result`, `status` | Succès/échec + catégorie d'erreur (jamais le message d'exception brut) |
+| `vendor_product` | `"coreapi"` |
+| `dest` | Domaine/DC cible |
+| `src` | IP source de l'appelant |
+
+Enveloppe d'indexation Splunk : `sourcetype` = `coreapi:audit:change` (et `coreapi:audit:auth`
+pour les événements de validation de jeton, alignés sur le data model CIM Authentication).
+
+**2. Extension coreapi, configurable par fiche d'intégration** — hors CIM standard mais
+coexiste sans problème à côté du socle : `coreapi_jti`, `coreapi_correlationId`,
+`coreapi_executionPath`, `coreapi_approvalReference`, `coreapi_scope`, plus
+`siemExtensionFields` déclarés dans la fiche d'intégration du consommateur. Le socle reste
+toujours envoyé ; c'est cette extension qui varie en volume selon les exigences du
+consommateur, pas le socle.
+
 ### Instance unique vs multi-instance — deux branches séparées
 
 coreapi tournera probablement en plusieurs instances en production (Fargate, disponibilité).
@@ -235,10 +334,9 @@ ne pas trancher maintenant, développer les deux pistes séparément :
   ordinaire et un groupe de sécurité privilégié ne devraient probablement pas être traités de
   façon identique même s'ils sont tous deux "des groupes." Piste évoquée : la sensibilité de
   l'objet cible, pas le type d'objet, détermine le traitement — à confirmer.
-- **Forme exacte du claim d'autorisation dans le JWT** pour le niveau "confiance du client"
-  (Option A) — quel nom de claim, quelles valeurs possibles, qui l'émet. Distinct de la
-  traçabilité par `jti` (déjà réglée ci-dessus).
-- **Format exact du log propre à coreapi** envoyé au SIEM — schéma, champs obligatoires,
-  corrélation avec l'identité JWT (`CODE-03` de l'audit Codex)
+- **Liaison cryptographique des deux jetons de création/modification d'une fiche
+  d'intégration** — comment garantir que le jeton d'approbation (ServiceNow) porte bien sur le
+  contenu exact du jeton de demande (IIQ) et pas sur un contenu substitué. Piste : hash du
+  corps de la fiche porté par les deux jetons, comparé par coreapi.
 - **Vérification API-à-API pour le Control Plane** — protocole exact vers quelle API côté
   gouvernance, pas encore défini (et pas urgent : aucun code n'atteint ce chemin aujourd'hui)
