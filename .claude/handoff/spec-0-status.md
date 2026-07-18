@@ -123,7 +123,7 @@ The `TerminateInstanceAsync()` method exists but wasn't being called in recent S
 
 All learnings documented in:
 - `.wip/kb/active/ad-ds/unattended-deployment.json` — Correct sequence + Microsoft refs
-- `.claude/architecture/spec-0-developer-tooling.md` — Architecture decisions
+- `.wip/docs/specs/spec-0-developer-tooling.md` — Architecture decisions
 - `.claude/memory/spec-0-learnings.md` — Anti-patterns + critical insights
 
 **Key learning:** PowerShell UserData on Windows isn't "just pass it to EC2" — EC2Launch version and format matter critically.
