@@ -122,7 +122,7 @@ The `TerminateInstanceAsync()` method exists but wasn't being called in recent S
 ## Knowledge Captured
 
 All learnings documented in:
-- `.claude/knowledge-base/ad-ds-unattended-deployment.md` — Correct sequence + Microsoft refs
+- `.wip/kb/active/ad-ds/unattended-deployment.json` — Correct sequence + Microsoft refs
 - `.claude/architecture/spec-0-developer-tooling.md` — Architecture decisions
 - `.claude/memory/spec-0-learnings.md` — Anti-patterns + critical insights
 

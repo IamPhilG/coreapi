@@ -56,7 +56,7 @@ Integration tests run against real LDAP (port 389)
    - PowerShell 5.1 uses `CommandLineToArgvW` for native exe args
    - Bare `"` chars are stripped; must escape as `\"` for JSON arguments
    - Solution: `$escaped = $json -replace '"', '\"'`
-   - Reference: [ad-ds-unattended-deployment.md](../knowledge-base/ad-ds-unattended-deployment.md)
+   - Reference: [unattended-deployment](../../.wip/kb/active/ad-ds/unattended-deployment.json)
 
 2. **Idempotent Resource Management:**
    - Query for existing instance + Elastic IP before creating
@@ -212,7 +212,7 @@ Policy: `AmazonSSMManagedInstanceCore`
 
 **Fix:** Set static IP + point DNS to 127.0.0.1 before installing DNS role.
 
-**Reference:** [ad-ds-unattended-deployment.md - Network Prerequisites](../knowledge-base/ad-ds-unattended-deployment.md)
+**Reference:** [unattended-deployment - Network Prerequisites](../../.wip/kb/active/ad-ds/unattended-deployment.json)
 
 ### Issue 2: DCPROMO Hangs or Times Out
 
@@ -295,7 +295,7 @@ Get-Service DNS
 
 ## References
 
-- [ad-ds-unattended-deployment.md](../knowledge-base/ad-ds-unattended-deployment.md) — DCPROMO answer file syntax
+- [unattended-deployment](../../.wip/kb/active/ad-ds/unattended-deployment.json) — DCPROMO answer file syntax
 - [DCPROMO Answer File - Microsoft Learn](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/dcpromo)
 - [Active Directory on AWS - AWS Whitepapers](https://aws.amazon.com/whitepapers/active-directory-domain-services/)
 - [KopiCloud AD API](https://github.com/KopiCloud-AD-API/) — Reference implementation
