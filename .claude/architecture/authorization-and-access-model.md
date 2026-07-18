@@ -45,7 +45,7 @@ Ce que coreapi fait systématiquement, sans exception, pour **chaque** action :
 
 ## Les trois plans (EAM), pas trois chemins
 
-*Définition générique du modèle EAM : voir knowledge-base `enterprise-access-model`. Ce qui
+*Définition générique du modèle EAM : voir `.wip/kb` `enterprise-access-model`. Ce qui
 suit est uniquement le mapping propre à coreapi.*
 
 Erreur initiale corrigée en session : un plan (où vit l'actif) et un chemin d'accès (comment
@@ -97,12 +97,50 @@ Cette section capture la décision pour que Spec 7 la respecte dès sa conceptio
 **Décision (résout le point "forme du claim JWT — Option A")** : pas de nouveau claim
 personnalisé. Réutilisation du claim `scope`/`scp` OAuth2 standard, déjà présent dans le
 pipeline de validation Spec 3 (confirmé sur un jeton Okta réel en session : `"scp":
-["coreapi.access"]`). Valeurs cibles, une par chemin d'exécution technique :
+["coreapi.access"]`).
 
-- `coreapi.users.write` — chemin Utilisateur / Standard
-- `coreapi.service-accounts.write` — chemin Applicatif
-- `coreapi.control-plane.request` — chemin Privilégié (ce scope seul ne suffit pas : la
-  vérification API-à-API et le chemin réseau restent requis en plus, voir plus haut)
+### Taxonomie des scopes — nommage hiérarchique, construction incrémentale
+
+Risque identifié : une combinatoire (verbe × ressource × tier/sensibilité × chemin) explose
+vite si on tente de l'énumérer d'un coup. Décision : ne pas construire toute la taxonomie
+maintenant — définir une **convention de nommage** stable, et n'instancier que les scopes
+réellement nécessaires, spec par spec, branche par branche, au fur et à mesure du besoin.
+
+**Convention** : `coreapi.<plan>.<chemin>.<ressource>.<verbe>`
+
+- `<plan>` — un des trois plans EAM (`data-workload`, `management`, `control`)
+- `<chemin>` — un des chemins d'exécution technique (`standard`, `applicatif`, `privilegie`)
+- `<ressource>` — le type d'objet concerné (`users`, `groups`, `ous`, `service-accounts`,
+  `acl`, etc.)
+- `<verbe>` — un des cinq verbes retenus : `read` (Get/List), `create`, `update`, `delete`,
+  `audit` (accès à la trace d'audit de la ressource, distinct de la lecture de son état
+  courant)
+
+Les deux premiers segments (`<plan>`, `<chemin>`) sont deux axes **indépendants**, pas
+redondants : un même type de ressource peut relever de plans différents selon la sensibilité
+de sa cible précise (ex. création d'un groupe ordinaire = Data/Workload, création d'un groupe
+Tier 0 = Control Plane, alors que les deux passent par le même type d'objet "groupe"). Le plan
+n'est donc pas déductible du chemin seul. Ce mécanisme — le scope déclare à l'émission du
+jeton sur quel plan le client est autorisé à agir, plutôt que coreapi n'inspecte la cible à
+l'exécution pour en déduire sa sensibilité — est la réponse de mécanisme au point "Spec 6 et
+la sensibilité de l'objet cible" (Spec 6 reste à construire pour l'appliquer).
+
+**Limite technique à connaître** : les IdP usuels (Okta, Entra) ne font pas de correspondance
+par préfixe/wildcard sur les scopes — chaque scope est une chaîne exacte, accordée
+individuellement à un client. La hiérarchie ci-dessus est donc une convention de nommage utile
+pour l'audit et la lisibilité, pas un mécanisme natif de l'IdP. Des policies "grossières"
+basées sur un préfixe resteraient à implémenter côté coreapi lui-même, si/quand le besoin
+apparaît — pas fait maintenant.
+
+**Séparation des tâches (SoD)** : coreapi vérifie chaque scope **indépendamment, sans
+inférence** — détenir `create` n'implique jamais `delete`, ni aucun autre verbe. La décision
+de quelles combinaisons de scopes peuvent être accordées ensemble à un même client est une
+politique de gouvernance (IIQ), hors périmètre technique de coreapi — cohérent avec le
+principe fondateur du document.
+
+**Premiers scopes concrets (Spec 4, chemin Standard, ressource `users`)** :
+`coreapi.data-workload.standard.users.read`, `...create`, `...update`, `...delete`,
+`...audit`.
 
 ### Qui émet le claim, et comment coreapi l'interprète
 
@@ -185,7 +223,7 @@ pas une variation de deux.
 ## Stratégie de credential — les trois comptes, pas seulement Control Plane
 
 *Définitions génériques (gMSA, zero standing access, secretless, isolation EC2 vs Fargate) :
-voir knowledge-base `zero-standing-access` et `ecs-fargate-task-isolation`. Ce qui suit est le
+voir `.wip/kb` `zero-standing-access` et `ecs-fargate-task-isolation`. Ce qui suit est le
 choix propre à coreapi.*
 
 Correction en session : gMSA n'est pas une mesure réservée au chemin Control Plane — le
@@ -274,7 +312,7 @@ sont deux besoins différents qui n'ont pas à partager le même mécanisme :
 
 ### Format du log SIEM (résout "format exact du log — `CODE-03`")
 
-*Définition générique des modèles Splunk CIM utilisés ci-dessous : voir knowledge-base
+*Définition générique des modèles Splunk CIM utilisés ci-dessous : voir `.wip/kb`
 `splunk-cim-data-models` (statut `suspect` — à revalider contre l'instance Splunk cible avant
 implémentation).*
 

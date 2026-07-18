@@ -483,7 +483,7 @@ $RECYCLE.BIN/
 # Vim temporary swap files
 *.swp
 
-# Claude Code: commit settings, skills, and knowledge-base; exclude personal memory
+# Claude Code: commit settings, skills, and .wip/kb (knowledge-base submodule); exclude personal memory
 .claude/memory/
 .claude/settings.local.json
 
