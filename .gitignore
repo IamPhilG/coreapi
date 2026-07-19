@@ -483,6 +483,15 @@ $RECYCLE.BIN/
 # Vim temporary swap files
 *.swp
 
-# Claude Code: commit settings, skills, and knowledge-base; exclude personal memory
+# Claude Code: commit settings, skills, and .wip/kb (knowledge-base submodule); exclude personal memory
 .claude/memory/
 .claude/settings.local.json
+
+# Test infrastructure settings — contain AWS credentials and AD passwords; never commit
+tests/**/appsettings.Development.json
+
+# EC2 key pairs for RDP access
+.ssh/
+
+# Dev-only JWT signing keypair (Spec 3) — never commit, regenerated on first tool run
+tools/DevTokenMinter/dev-signing-key.*.pem

@@ -1,31 +1,39 @@
 using System.DirectoryServices.Protocols;
 using CoreApi.Infrastructure;
+using CoreApi.IntegrationTests.TestInfrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace CoreApi.IntegrationTests.Infrastructure;
 
 /// <summary>
-/// Requires a real LDAP target. Configure via environment variables before running:
-///   LDAP__Host, LDAP__BaseDn, LDAP__Port, LDAP__UseTls,
-///   LDAP__ServiceAccountUser, LDAP__ServiceAccountPassword
-/// Or populate appsettings.Development.json with real DC values.
+/// Requires a real LDAP target. Two ways to provide one:
+///
+/// Option A — Manual (existing DC or Samba container):
+///   Set env vars: LDAP__Host, LDAP__BaseDn, LDAP__Port, LDAP__UseTls,
+///                 LDAP__ServiceAccountUser, LDAP__ServiceAccountPassword
+///
+/// Option B — Auto-provisioned EC2 (set in tests/CoreApi.IntegrationTests/appsettings.Development.json):
+///   TestInfrastructure:ProvisionAdDc = true
+///   TestInfrastructure:ExistingInstanceId = i-xxxx  (or leave empty to launch fresh)
+///   See appsettings.Development.template.json for all options.
 /// </summary>
+[Collection("AdDc")]
 public class DirectoryConnectionTests : IDisposable
 {
     private readonly LdapDirectoryConnection _connection;
     private readonly string _baseDn;
 
-    public DirectoryConnectionTests()
+    public DirectoryConnectionTests(AdDcProvisionerFixture provisioner)
     {
         var options = new DirectoryConnectionOptions
         {
-            Host = Environment.GetEnvironmentVariable("LDAP__Host") ?? "localhost",
-            BaseDn = Environment.GetEnvironmentVariable("LDAP__BaseDn") ?? "DC=corp,DC=local",
-            Port = int.TryParse(Environment.GetEnvironmentVariable("LDAP__Port"), out var p) ? p : 389,
-            UseTls = bool.TryParse(Environment.GetEnvironmentVariable("LDAP__UseTls"), out var tls) && tls,
-            ServiceAccountUser = Environment.GetEnvironmentVariable("LDAP__ServiceAccountUser") ?? string.Empty,
-            ServiceAccountPassword = Environment.GetEnvironmentVariable("LDAP__ServiceAccountPassword") ?? string.Empty,
+            Host = provisioner.ResolvedHost,
+            BaseDn = provisioner.ResolvedBaseDn,
+            Port = provisioner.ResolvedPort,
+            UseTls = provisioner.ResolvedUseTls,
+            ServiceAccountUser = provisioner.ResolvedServiceAccountUser,
+            ServiceAccountPassword = provisioner.ResolvedServiceAccountPassword,
             TimeoutSeconds = 10
         };
 
@@ -61,6 +69,61 @@ public class DirectoryConnectionTests : IDisposable
             attributes: ["dc", "distinguishedName"]);
 
         Assert.NotEmpty(results);
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task AddModifyMoveDelete_FullLifecycle_AgainstRealDc()
+    {
+        // sAMAccountName is capped at 20 chars, so keep the random suffix short.
+        string suffix = Guid.NewGuid().ToString("N")[..8];
+        string cn = $"itest-{suffix}";
+        string usersContainer = $"CN=Users,{_baseDn}";
+        string dn = $"CN={cn},{usersContainer}";
+
+        // Add — userAccountControl=514 (disabled + normal account) avoids touching
+        // unicodePwd/password-complexity, which requires LDAPS and is out of scope here.
+        await _connection.AddAsync(new AddRequest(dn,
+            new DirectoryAttribute("objectClass", "user"),
+            new DirectoryAttribute("sAMAccountName", cn),
+            new DirectoryAttribute("userAccountControl", "514")));
+
+        try
+        {
+            var afterAdd = await _connection.SearchAsync(
+                dn, "(objectClass=user)", SearchScope.Base, ["cn"]);
+            Assert.Single(afterAdd);
+
+            // Modify
+            await _connection.ModifyAsync(new ModifyRequest(
+                dn, DirectoryAttributeOperation.Replace, "description", "coreapi integration test"));
+
+            var afterModify = await _connection.SearchAsync(
+                dn, "(objectClass=user)", SearchScope.Base, ["description"]);
+            Assert.Equal("coreapi integration test", (string)afterModify[0].Attributes["description"][0]);
+
+            // Move (rename in place — newParentDn=null keeps the same container)
+            string renamedCn = $"{cn}-renamed";
+            string renamedDn = $"CN={renamedCn},{usersContainer}";
+            await _connection.MoveAsync(dn, newParentDn: null, newName: $"CN={renamedCn}");
+            dn = renamedDn;
+
+            var afterMove = await _connection.SearchAsync(
+                dn, "(objectClass=user)", SearchScope.Base, ["cn"]);
+            Assert.Single(afterMove);
+
+            var oldDnGone = await _connection.SearchAsync(
+                usersContainer, $"(cn={LdapFilterEncoder.Escape(cn)})", SearchScope.OneLevel, ["cn"]);
+            Assert.Empty(oldDnGone);
+        }
+        finally
+        {
+            await _connection.DeleteAsync(dn);
+        }
+
+        var afterDelete = await _connection.SearchAsync(
+            usersContainer, $"(cn={LdapFilterEncoder.Escape(cn)}*)", SearchScope.OneLevel, ["cn"]);
+        Assert.Empty(afterDelete);
     }
 
     public void Dispose() => _connection.Dispose();

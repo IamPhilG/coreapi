@@ -1,15 +1,13 @@
+---
+name: coreapi-project-goal
+description: Objectifs et périmètre confirmés du projet coreapi
+metadata:
+  type: decision
+  created: 2026-06-16
+  validated: 2026-06-16
+---
+
 # Project CoreAPI Goals
-
----
-
-## MetaData
-
-- name: project-coreapi-goal
-- description: Core purpose and confirmed architectural decisions for ouritres/coreapi
-- metadata:
-  - type: project
-
----
 
 `coreapi` is the shared AD DS gateway backend for the Ouritres GitHub org. Higher-level topic APIs (user management, group management, etc.) delegate all AD operations to this single service.
 

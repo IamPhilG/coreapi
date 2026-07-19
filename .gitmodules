@@ -1,0 +1,3 @@
+[submodule "knowledge-base"]
+	path = .wip/kb
+	url = https://github.com/OurITRes/knowledge-base.git

@@ -24,6 +24,12 @@
             "if": "Bash(git *)",
             "command": "$i = [Console]::In.ReadToEnd() | ConvertFrom-Json; $cmd = $i.tool_input.command; if ($cmd -match 'reset\\s+--hard|clean\\s+-f|checkout\\s+--') { Write-Output '{\"continue\": false, \"stopReason\": \"[HOOK] Destructive git operation requires explicit user confirmation.\"}' } else { exit 0 }",
             "statusMessage": "Checking for destructive git operation..."
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/block-destructive-bash.sh",
+            "shell": "bash",
+            "timeout": 10
           }
         ]
       }
