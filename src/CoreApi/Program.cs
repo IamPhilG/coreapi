@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using CoreApi.Infrastructure;
+using CoreApi.Infrastructure.Authorization;
 using CoreApi.Infrastructure.Conventions;
 using CoreApi.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -17,6 +18,11 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new() { Title = "CoreApi", Version = "v1" });
+    // GroupName on [ApiExplorerSettings] (Users, ServiceAccounts, ...) is a display tag, not a
+    // separate document -- there is only one Swagger document ("v1"). Swashbuckle's default
+    // DocInclusionPredicate treats GroupName as a document selector and silently drops every
+    // action from "v1" otherwise, since no GroupName equals "v1".
+    options.DocInclusionPredicate((_, _) => true);
 
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
@@ -53,6 +59,11 @@ var jwtOptions = builder.Configuration.GetSection(JwtOptions.SectionName).Get<Jw
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
+        // Without this, the handler silently remaps short claim types (e.g. "scp", "sub") to
+        // legacy long-form URIs (e.g. "http://schemas.microsoft.com/identity/claims/scope"),
+        // which breaks any code -- like ScopePolicies.HasScope -- that reads the claim type
+        // the IdP actually issued.
+        options.MapInboundClaims = false;
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -87,7 +98,17 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         }
     });
 
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    foreach (string scope in new[]
+             {
+                 ScopePolicies.UsersRead, ScopePolicies.UsersCreate,
+                 ScopePolicies.UsersUpdate, ScopePolicies.UsersDelete,
+             })
+    {
+        options.AddPolicy(scope, policy => policy.RequireAssertion(ctx => ScopePolicies.HasScope(ctx.User, scope)));
+    }
+});
 
 // AD DS connection layer (Spec 2)
 builder.Services.AddOptions<DirectoryConnectionOptions>()
@@ -121,3 +142,6 @@ app.MapControllers();
 app.MapHealthChecks("/health");
 
 app.Run();
+
+// Exposes the top-level Program class to WebApplicationFactory<Program> in the test projects.
+public partial class Program;

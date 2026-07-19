@@ -1,6 +1,8 @@
 using System.ComponentModel.DataAnnotations;
+using CoreApi.Infrastructure.Authorization;
 using CoreApi.Models;
 using CoreApi.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace CoreApi.Controllers;
@@ -22,6 +24,7 @@ public sealed class UsersController(IUserService users) : BaseApiController
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The matching users, up to <paramref name="pageSize"/>.</returns>
     [HttpGet]
+    [Authorize(Policy = ScopePolicies.UsersRead)]
     [ProducesResponseType<IReadOnlyList<UserDto>>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -40,6 +43,7 @@ public sealed class UsersController(IUserService users) : BaseApiController
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The matching user.</returns>
     [HttpGet("{samAccountName}")]
+    [Authorize(Policy = ScopePolicies.UsersRead)]
     [ProducesResponseType<UserDto>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
@@ -58,6 +62,7 @@ public sealed class UsersController(IUserService users) : BaseApiController
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The created user.</returns>
     [HttpPost]
+    [Authorize(Policy = ScopePolicies.UsersCreate)]
     [ProducesResponseType<UserDto>(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -77,6 +82,7 @@ public sealed class UsersController(IUserService users) : BaseApiController
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The updated user.</returns>
     [HttpPut("{samAccountName}")]
+    [Authorize(Policy = ScopePolicies.UsersUpdate)]
     [ProducesResponseType<UserDto>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -94,6 +100,7 @@ public sealed class UsersController(IUserService users) : BaseApiController
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>No content.</returns>
     [HttpDelete("{samAccountName}")]
+    [Authorize(Policy = ScopePolicies.UsersDelete)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
