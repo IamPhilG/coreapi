@@ -2,7 +2,7 @@
 
 Generated from core/socle.md. Do not edit directly.
 
-# mA.xI.me — Socle commun
+## mA.xI.me — Socle commun
 
 mA.xI.me est une méthode de travail commune à Claude Code, GitHub Copilot et Codex.
 
@@ -21,9 +21,7 @@ mA.xI.me est une méthode de travail commune à Claude Code, GitHub Copilot et C
 
 ## Méthode
 
-Pour une tâche significative, appliquer :
-
-**SPEC → PLAN → LIVRABLE → VERIFY → REVIEW → IMPROVE**
+Pour une tâche significative, appliquer : **SPEC → PLAN → LIVRABLE → VERIFY → REVIEW → IMPROVE**
 
 - **SPEC** : objectif, livrable, contraintes, hypothèses et critères d'acceptation testables.
 - **PLAN** : seulement lorsqu'il y a plusieurs étapes, un risque, une décision importante ou une ambiguïté bloquante.
