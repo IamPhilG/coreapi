@@ -13,14 +13,14 @@ public sealed class AuthorizeCheckOperationFilter : IOperationFilter
 {
     public void Apply(OpenApiOperation operation, OperationFilterContext context)
     {
-        bool hasAuthorize =
-            context.MethodInfo.DeclaringType?.GetCustomAttributes(true).OfType<AuthorizeAttribute>().Any() == true ||
-            context.MethodInfo.GetCustomAttributes(true).OfType<AuthorizeAttribute>().Any();
+        var authorizeAttributes = context.MethodInfo.GetCustomAttributes(true).OfType<AuthorizeAttribute>()
+            .Concat(context.MethodInfo.DeclaringType?.GetCustomAttributes(true).OfType<AuthorizeAttribute>() ?? [])
+            .ToList();
 
         bool hasAllowAnonymous =
             context.MethodInfo.GetCustomAttributes(true).OfType<AllowAnonymousAttribute>().Any();
 
-        if (!hasAuthorize || hasAllowAnonymous)
+        if (authorizeAttributes.Count == 0 || hasAllowAnonymous)
             return;
 
         operation.Security ??= [];
@@ -28,5 +28,18 @@ public sealed class AuthorizeCheckOperationFilter : IOperationFilter
         {
             { new OpenApiSecuritySchemeReference("Bearer", context.Document), [] }
         });
+
+        var requiredScopes = authorizeAttributes
+            .Select(a => a.Policy)
+            .Where(policy => !string.IsNullOrEmpty(policy))
+            .ToList();
+
+        if (requiredScopes.Count > 0)
+        {
+            string note = $"Requires scope: `{string.Join("`, `", requiredScopes)}`.";
+            operation.Description = string.IsNullOrEmpty(operation.Description)
+                ? note
+                : $"{operation.Description}\n\n{note}";
+        }
     }
 }
