@@ -1,0 +1,361 @@
+# Catalogue des spécifications — CoreAPI
+# Voir README.md de ce dossier pour le sens des champs et des statuts.
+# Réconcilié le 2026-07-19 (incrément EN-01) à partir du code fusionné dans main (@ 1ff3df4),
+# de la revue d'architecture/sécurité du 2026-07-19 (révision 2), et de vérifications ponctuelles
+# effectuées le jour de cet incrément (voir docs/specifications/*/*.md pour le détail par item).
+
+specs:
+  - id: SPEC-0
+    title: Infrastructure AD de test/démonstration
+    type: enabler
+    status: partial
+    owner: Philippe
+    depends_on: []
+    blocks: [EN-06, EN-07]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence:
+      - .claude/handoff/spec-0-status.md (status RESOLVED, 2026-07-16)
+      - tests/CoreApi.IntegrationTests/TestInfrastructure/AdDcProvisionerFixture.cs
+      - tests/CoreApi.IntegrationTests/Infrastructure/DirectoryConnectionTests.cs (5 cas)
+    last_reviewed: "2026-07-19"
+
+  - id: SPEC-1
+    title: Squelette projet
+    type: enabler
+    status: done
+    owner: Philippe
+    depends_on: []
+    blocks: [SPEC-2]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence:
+      - "branche feature/spec-1, fusionnée dans main (ancêtre direct)"
+    last_reviewed: "2026-07-19"
+
+  - id: SPEC-2
+    title: Connexion LDAP/LDAPS
+    type: enabler
+    status: done
+    owner: Philippe
+    depends_on: [SPEC-1]
+    blocks: [SPEC-4, SPEC-5, SPEC-6, SPEC-7]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence:
+      - tests/CoreApi.UnitTests/Infrastructure/LdapDirectoryConnectionTests.cs
+      - tests/CoreApi.UnitTests/Infrastructure/LdapDirectoryConnectionCertificateTests.cs
+      - tests/CoreApi.IntegrationTests/Infrastructure/DirectoryConnectionTests.cs
+    last_reviewed: "2026-07-19"
+
+  - id: SPEC-3
+    title: Authentification JWT
+    type: functional
+    status: done
+    owner: Philippe
+    depends_on: [SPEC-1]
+    blocks: [SPEC-4]
+    source_requests: [revue-2026-07-19, "#2 (multi-IdP, extension future non implémentée)"]
+    acceptance_evidence:
+      - tests/CoreApi.UnitTests/Infrastructure/JwtTokenValidationTests.cs (8 cas)
+      - .wip/docs/specs/spec-3-jwt-authentication.md (frontmatter status: done)
+    last_reviewed: "2026-07-19"
+
+  - id: SPEC-4
+    title: CRUD utilisateurs et scopes
+    type: functional
+    status: done
+    owner: Philippe
+    depends_on: [SPEC-2, SPEC-3]
+    blocks: [SPEC-5, SPEC-6, SPEC-7, SPEC-8]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence:
+      - tests/CoreApi.UnitTests/Controllers/UsersControllerAuthorizationTests.cs
+      - "commit 78a45ac (feat(authz): enforce tiered OAuth scopes on user endpoints), fusionné dans main via PR #5 (1ff3df4)"
+    last_reviewed: "2026-07-19"
+
+  - id: SPEC-5
+    title: Comptes de service
+    type: functional
+    status: not-started
+    owner: Philippe
+    depends_on: [SPEC-4, SEC-01]
+    blocks: []
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: SPEC-6
+    title: Groupes et OU
+    type: functional
+    status: not-started
+    owner: Philippe
+    depends_on: [SPEC-4, SEC-01]
+    blocks: []
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: SPEC-7
+    title: ACL et délégations
+    type: functional
+    status: not-started
+    owner: Philippe
+    depends_on: [SPEC-6, SEC-01, SEC-04]
+    blocks: []
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: SPEC-8
+    title: Hooks et règles métier
+    type: functional
+    status: not-started
+    owner: Philippe
+    depends_on: [SPEC-4, SEC-01]
+    blocks: []
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence:
+      - "src/CoreApi/Hooks/ ne contient que .gitkeep (vérifié 2026-07-19)"
+    last_reviewed: "2026-07-19"
+
+  - id: SPEC-9
+    title: Déploiement AWS
+    type: enabler
+    status: not-started
+    owner: Philippe
+    depends_on: [SPIKE-01]
+    blocks: []
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: SPEC-10
+    title: OpenAPI et expérience API
+    type: functional
+    status: partial
+    owner: Philippe
+    depends_on: [SPEC-4]
+    blocks: [EN-04]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence:
+      - src/CoreApi/Infrastructure/Conventions/AuthorizeCheckOperationFilter.cs
+      - "Swashbuckle.AspNetCore 10.2.1 (src/CoreApi/CoreApi.csproj)"
+    last_reviewed: "2026-07-19"
+
+  # --- Enablers ---
+
+  - id: EN-01
+    title: Baseline documentaire et catalogue
+    type: enabler
+    status: done
+    owner: Philippe
+    depends_on: []
+    blocks: []
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence:
+      - "docs/ créé le 2026-07-19 (cet incrément)"
+      - "docs/adr/decisions-log.md, entrée du 2026-07-20 : validation explicite de Philippe, portée limitée à CoreAPI"
+    last_reviewed: "2026-07-20"
+
+  - id: EN-02
+    title: Hygiène Git, décisions et traçabilité
+    type: enabler
+    status: planned
+    owner: Philippe
+    depends_on: [EN-01]
+    blocks: []
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: EN-03
+    title: CI et quality gates
+    type: enabler
+    status: planned
+    owner: Philippe
+    depends_on: []
+    blocks: [EN-05]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: EN-04
+    title: Démonstration sécurisée
+    type: enabler
+    status: planned
+    owner: Philippe
+    depends_on: [SPEC-4, SPEC-10]
+    blocks: []
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: EN-05
+    title: Migration .NET 10 LTS
+    type: enabler
+    status: planned
+    owner: Philippe
+    depends_on: [EN-03]
+    blocks: []
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: EN-06
+    title: Hardening du DC de test
+    type: enabler
+    status: planned
+    owner: Philippe
+    depends_on: [SPEC-0]
+    blocks: [EN-07]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: EN-07
+    title: Contrat et externalisation du provisionneur
+    type: enabler
+    status: planned
+    owner: Philippe
+    depends_on: [EN-06]
+    blocks: []
+    source_requests: ["#3", revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: EN-08
+    title: POC de déploiement AWS
+    type: enabler
+    status: planned
+    owner: Philippe
+    depends_on: [SPIKE-01, SPIKE-02]
+    blocks: []
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: EN-09
+    title: Observabilité et audit
+    type: enabler
+    status: planned
+    owner: Philippe
+    depends_on: [SPEC-4]
+    blocks: [SEC-03]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: EN-10
+    title: Résilience, readiness et rate limiting
+    type: enabler
+    status: planned
+    owner: Philippe
+    depends_on: [SPEC-2, SPEC-4]
+    blocks: []
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  # --- Sécurité ---
+
+  - id: SEC-01
+    title: Autorisation par client, cible, OU, objet et attribut
+    type: security
+    status: planned
+    owner: Philippe
+    depends_on: [SPEC-4]
+    blocks: [SPEC-5, SPEC-6, SPEC-7, SPEC-8]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: SEC-02
+    title: Identités d'exécution, secrets et moindre privilège
+    type: security
+    status: planned
+    owner: Philippe
+    depends_on: [SPEC-2]
+    blocks: [EN-08]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: SEC-03
+    title: Audit, corrélation et non-répudiation
+    type: security
+    status: planned
+    owner: Philippe
+    depends_on: [EN-09]
+    blocks: []
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: SEC-04
+    title: Tier 1, Tier 0, JIT et chemins privilégiés
+    type: security
+    status: planned
+    owner: Philippe
+    depends_on: [SEC-01]
+    blocks: [SPEC-7]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: SEC-05
+    title: Politique LDAP et certificats
+    type: security
+    status: planned
+    owner: Philippe
+    depends_on: [SPEC-2]
+    blocks: []
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence:
+      - "LDAPS + validation certificat/hostname déjà implémentées et testées (SPEC-2) ; ce qui reste planned est la politique de signing/channel binding pour un futur mécanisme Negotiate/SASL"
+    last_reviewed: "2026-07-19"
+
+  # --- Spikes ---
+
+  - id: SPIKE-01
+    title: Viabilité ECS Fargate Linux
+    type: spike
+    status: planned
+    owner: Philippe
+    depends_on: [SPIKE-02]
+    blocks: [SPEC-9, EN-08]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: SPIKE-02
+    title: Domainless gMSA et credential bootstrap
+    type: spike
+    status: planned
+    owner: Philippe
+    depends_on: []
+    blocks: [SPIKE-01]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence: []
+    last_reviewed: "2026-07-19"
+
+  - id: SPIKE-03
+    title: Multi-instance et suivi partagé du jti
+    type: spike
+    status: planned
+    owner: Philippe
+    depends_on: []
+    blocks: [SEC-04]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence:
+      - "branche feature/multi-instance-support : base de fusion 052713c (antérieure aux PR #4/#5), diff contre main = suppressions uniquement (32 fichiers, -2218/+279) — aucun travail réel, marqueur d'intention seulement"
+    last_reviewed: "2026-07-19"
+
+  - id: SPIKE-04
+    title: Liaison cryptographique des fiches d'intégration
+    type: spike
+    status: planned
+    owner: Philippe
+    depends_on: []
+    blocks: [SEC-02]
+    source_requests: [revue-2026-07-19]
+    acceptance_evidence:
+      - "branche feature/integration-record-cert-binding : base de fusion 052713c (antérieure aux PR #4/#5), diff contre main = suppressions uniquement (32 fichiers, -2218/+279) — aucun travail réel, marqueur d'intention seulement"
+    last_reviewed: "2026-07-19"
