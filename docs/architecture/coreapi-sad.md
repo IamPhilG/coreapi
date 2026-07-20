@@ -13,7 +13,7 @@ Voir [`../product/vision.md`](../product/vision.md) et [`../product/capability-m
 ### Composants (`src/CoreApi/`)
 
 | Composant | Rôle | Fichier |
-|---|---|---|
+| - | - | - |
 | `Program.cs` | pipeline ASP.NET Core : JWT bearer, policies d'autorisation, Swagger, health check | `src/CoreApi/Program.cs` |
 | `Controllers/UsersController.cs` | CRUD HTTP `/v1/users`, un `[Authorize(Policy=...)]` par verbe | `src/CoreApi/Controllers/UsersController.cs` |
 | `Infrastructure/Authorization/ScopePolicies.cs` | format de scope `coreapi.ad.<tier>.<resource>.<verb>` | `src/CoreApi/Infrastructure/Authorization/ScopePolicies.cs` |
