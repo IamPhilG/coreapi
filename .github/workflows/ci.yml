@@ -1,0 +1,84 @@
+name: CI
+
+# Pull-request validation: restore, build, unit + HTTP end-to-end tests, and a vulnerable-package
+# scan. Intentionally excludes the AD/AWS integration tests (CoreApi.IntegrationTests), which need
+# a real Domain Controller and AWS credentials and must only run in an authorized environment.
+# No secrets, no cloud resources, no deployment, no publish.
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore (locked)
+        run: dotnet restore --locked-mode
+
+      - name: Build (Release)
+        run: dotnet build --configuration Release --no-restore
+
+      # The unit test project also holds the HTTP end-to-end guardrail tests (Swagger by
+      # environment, rate limiting, health), which boot the app in-memory with no DC and no AWS.
+      - name: Unit + HTTP end-to-end tests (no DC, no AWS)
+        run: dotnet test tests/CoreApi.UnitTests/CoreApi.UnitTests.csproj --configuration Release --no-build
+
+      # The scan always exits 0, so decide pass/fail from its machine-readable JSON rather than a
+      # console phrase (language- and wording-independent). A project only carries a `frameworks`
+      # node when it has vulnerable packages; count every vulnerability across top-level and
+      # transitive references and fail if any exist.
+      - name: Vulnerable package scan
+        shell: pwsh
+        run: |
+          $reportPath = Join-Path $env:RUNNER_TEMP "vulnerable-packages.json"
+
+          dotnet package list `
+            --include-transitive `
+            --vulnerable `
+            --format json `
+            > $reportPath
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "dotnet package list failed with exit code $LASTEXITCODE"
+          }
+
+          if (-not (Test-Path $reportPath) -or (Get-Item $reportPath).Length -eq 0) {
+              throw "dotnet package list did not produce a JSON report"
+          }
+
+          try {
+              $report = Get-Content $reportPath -Raw |
+                  ConvertFrom-Json -ErrorAction Stop
+          }
+          catch {
+              throw "Unable to parse vulnerability report: $($_.Exception.Message)"
+          }
+
+          $count = 0
+          foreach ($project in @($report.projects)) {
+            foreach ($framework in @($project.frameworks)) {
+              foreach ($package in @($framework.topLevelPackages) + @($framework.transitivePackages)) {
+                $count += @($package.vulnerabilities).Count
+              }
+            }
+          }
+          Write-Host "Vulnerable package references found: $count"
+          if ($count -gt 0) {
+            $report.projects | ConvertTo-Json -Depth 10
+            Write-Error "Vulnerable NuGet packages detected."
+            exit 1
+          }
