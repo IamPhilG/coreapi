@@ -54,6 +54,31 @@ public sealed class UsersController(IUserService users) : BaseApiController
         return Ok(await users.GetBySamAccountNameAsync(samAccountName, cancellationToken));
     }
 
+    /// <summary>Lists the groups the user is a direct member of.</summary>
+    /// <remarks>
+    /// Returns only direct memberships (groups whose member attribute contains this user), and
+    /// returns them in full. Transitive (nested) memberships are not computed: if the user is a
+    /// direct member of Group-A and Group-A is itself a member of Group-B, only Group-A is
+    /// returned, never Group-B. The primary group determined by primaryGroupID (e.g. "Domain
+    /// Users") is not included in this increment.
+    /// </remarks>
+    /// <param name="samAccountName">The user's sAMAccountName.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The groups the user is a direct member of.</returns>
+    [HttpGet("{samAccountName}/groups")]
+    [Authorize(Policy = ScopePolicies.GroupsRead)]
+    [ProducesResponseType<IReadOnlyList<GroupDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public async Task<ActionResult<IReadOnlyList<GroupDto>>> GetGroups(
+        string samAccountName, CancellationToken cancellationToken)
+    {
+        return Ok(await users.GetGroupMembershipsAsync(samAccountName, cancellationToken));
+    }
+
     /// <summary>
     /// Creates a new AD user account. The account is always created disabled -- setting an
     /// initial password requires LDAPS, not yet configured.

@@ -34,6 +34,7 @@ public sealed class UsersControllerAuthorizationTests : IClassFixture<UsersContr
     {
         { "GET", "/v1/users", ScopePolicies.UsersRead, null },
         { "GET", "/v1/users/jsmith", ScopePolicies.UsersRead, null },
+        { "GET", "/v1/users/jsmith/groups", ScopePolicies.GroupsRead, null },
         { "POST", "/v1/users", ScopePolicies.UsersCreate, "create" },
         { "PUT", "/v1/users/jsmith", ScopePolicies.UsersUpdate, "update" },
         { "DELETE", "/v1/users/jsmith", ScopePolicies.UsersDelete, null },
@@ -98,8 +99,9 @@ public sealed class UsersControllerAuthorizationTests : IClassFixture<UsersContr
         string method, string path, string requiredScope, string? bodyKind)
     {
         // Holds a real, unrelated scope -- proves the check rejects on identity, not on
-        // "no scopes at all".
-        string token = _factory.MintToken(Issuer, Audience, "coreapi.ad.t2.groups.read");
+        // "no scopes at all". Must not collide with any scope actually required by a row above
+        // (groups.read is now a required scope), so use a different-tier scope no endpoint grants.
+        string token = _factory.MintToken(Issuer, Audience, "coreapi.ad.t1.users.read");
         var request = CreateRequest(method, path, bodyKind);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
@@ -186,8 +188,20 @@ public sealed class UsersControllerAuthorizationTests : IClassFixture<UsersContr
             Enabled = true,
         };
 
+        private static readonly GroupDto SampleGroup = new()
+        {
+            ObjectGuid = System.Guid.NewGuid().ToString(),
+            SamAccountName = "Admins",
+            DisplayName = "Administrators",
+            DistinguishedName = "CN=Admins,OU=Groups,DC=corp,DC=local",
+            CanonicalName = "corp.local/Groups/Admins",
+        };
+
         public Task<UserDto> GetBySamAccountNameAsync(string samAccountName, CancellationToken cancellationToken = default) =>
             Task.FromResult(Sample);
+
+        public Task<IReadOnlyList<GroupDto>> GetGroupMembershipsAsync(string samAccountName, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<GroupDto>>([SampleGroup]);
 
         public Task<IReadOnlyList<UserDto>> ListAsync(string? ouPath, int pageSize, CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<UserDto>>([Sample]);

@@ -14,6 +14,7 @@ public static class ScopePolicies
     public const string UsersCreate = "coreapi.ad.t2.users.create";
     public const string UsersUpdate = "coreapi.ad.t2.users.update";
     public const string UsersDelete = "coreapi.ad.t2.users.delete";
+    public const string GroupsRead = "coreapi.ad.t2.groups.read";
 
     /// <summary>
     /// True if <paramref name="user"/> carries <paramref name="scope"/>. Checks both scope

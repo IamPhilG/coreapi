@@ -36,11 +36,14 @@ builder.Services.AddSwaggerGen(options =>
         In = ParameterLocation.Header,
         Description = "Paste a JWT access token — Swagger UI adds the \"Bearer \" prefix automatically."
     });
-    options.OperationFilter<AuthorizeCheckOperationFilter>();
-
     string xmlPath = Path.Combine(AppContext.BaseDirectory, $"{typeof(Program).Assembly.GetName().Name}.xml");
     if (File.Exists(xmlPath))
         options.IncludeXmlComments(xmlPath);
+
+    // Registered AFTER IncludeXmlComments so the "Requires scope" note is appended to the
+    // XML-derived description rather than overwritten by it (operation filters run in
+    // registration order). Endpoints without XML remarks still get the note alone.
+    options.OperationFilter<AuthorizeCheckOperationFilter>();
 });
 
 builder.Services.AddHealthChecks();
@@ -107,6 +110,7 @@ builder.Services.AddAuthorization(options =>
              {
                  ScopePolicies.UsersRead, ScopePolicies.UsersCreate,
                  ScopePolicies.UsersUpdate, ScopePolicies.UsersDelete,
+                 ScopePolicies.GroupsRead,
              })
     {
         options.AddPolicy(scope, policy => policy.RequireAssertion(ctx => ScopePolicies.HasScope(ctx.User, scope)));

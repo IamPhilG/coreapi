@@ -23,6 +23,14 @@ public interface IDirectoryConnection
     /// that should never legitimately return many entries (e.g. an exact sAMAccountName match),
     /// not for listings a caller expects to page through.
     /// </param>
+    /// <param name="enforceResultCeiling">
+    /// Only meaningful when <paramref name="maxResults"/> is null. When true (default), the
+    /// search throws <see cref="SearchResultsLimitExceededException"/> once more than
+    /// DirectoryConnection:MaxSearchResults entries match -- the guard for lookups expected to
+    /// return a handful of entries. Set false to enumerate every matching entry exhaustively
+    /// (all pages, no ceiling), for operations whose complete result set is the contract -- e.g.
+    /// a user's full direct group membership, which can legitimately exceed the ceiling.
+    /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     Task<IReadOnlyList<SearchResultEntry>> SearchAsync(
         string baseDn,
@@ -31,6 +39,7 @@ public interface IDirectoryConnection
         string[]? attributes = null,
         DirectoryControl[]? controls = null,
         int? maxResults = null,
+        bool enforceResultCeiling = true,
         CancellationToken cancellationToken = default);
 
     Task AddAsync(AddRequest request, CancellationToken cancellationToken = default);

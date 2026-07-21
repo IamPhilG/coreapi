@@ -19,6 +19,35 @@ public sealed class UserService(
         return MapToDto(entry);
     }
 
+    public async Task<IReadOnlyList<GroupDto>> GetGroupMembershipsAsync(
+        string samAccountName, CancellationToken cancellationToken = default)
+    {
+        // Resolve the user first: 404 if the account itself doesn't exist, and we need its DN to
+        // find the groups whose `member` points at it.
+        var user = await FindEntryAsync(samAccountName, cancellationToken);
+
+        // Direct membership only: groups whose `member` attribute contains this exact user DN.
+        // We deliberately do NOT read the returned groups' own memberOf, and do NOT use
+        // LDAP_MATCHING_RULE_IN_CHAIN -- a group nested inside another is returned, but the outer
+        // group it belongs to is not walked. The primary group (primaryGroupID) isn't carried in
+        // `member`, so it's out of scope here (documented known limitation).
+        string filter = BuildGroupMembershipFilter(user.DistinguishedName);
+
+        // Returning the user's COMPLETE direct membership is the contract, so this search must
+        // enumerate every page: enforceResultCeiling: false disables the small-lookup ceiling
+        // (which would otherwise 400 past MaxSearchResults) without touching any other search's
+        // limit. Timeout, cancellation and connection cleanup are handled inside SearchAsync.
+        var entries = await connection.SearchAsync(
+            directoryOptions.Value.BaseDn,
+            filter,
+            SearchScope.Subtree,
+            attributes: GroupAttributes,
+            enforceResultCeiling: false,
+            cancellationToken: cancellationToken);
+
+        return OrderAndDedupe(entries.Select(MapToGroupDto));
+    }
+
     public async Task<IReadOnlyList<UserDto>> ListAsync(string? ouPath, int pageSize, CancellationToken cancellationToken = default)
     {
         string baseDn = string.IsNullOrEmpty(ouPath) ? directoryOptions.Value.BaseDn : ouPath;
@@ -112,6 +141,29 @@ public sealed class UserService(
     internal static string BuildSamAccountNameFilter(string samAccountName) =>
         $"{UserFilterBase}(sAMAccountName={LdapFilterEncoder.Escape(samAccountName)}))";
 
+    /// <summary>Filter for the groups a user is a direct member of. The user DN is escaped
+    /// (RFC 4515) before composition -- a CN legitimately containing parentheses (e.g.
+    /// "Smith (contractor)") would otherwise break the filter. Exposed for unit testing (see
+    /// <see cref="BuildSamAccountNameFilter"/> for why).</summary>
+    internal static string BuildGroupMembershipFilter(string userDistinguishedName) =>
+        $"(&(objectCategory=group)(member={LdapFilterEncoder.Escape(userDistinguishedName)}))";
+
+    /// <summary>
+    /// Produces a stable, duplicate-free view of a user's direct groups. AD returns no inherent
+    /// order, and (defensively, e.g. across paged reads) the same group could surface twice; the
+    /// caller gets each group once -- keyed on the stable objectGUID -- ordered by sAMAccountName
+    /// (case-insensitive) then objectGUID as a deterministic tie-breaker, never the directory's
+    /// native order. Exposed for unit testing (see <see cref="BuildSamAccountNameFilter"/> for
+    /// why).
+    /// </summary>
+    internal static IReadOnlyList<GroupDto> OrderAndDedupe(IEnumerable<GroupDto> groups) =>
+        groups
+            .GroupBy(g => g.ObjectGuid, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .OrderBy(g => g.SamAccountName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(g => g.ObjectGuid, StringComparer.Ordinal)
+            .ToList();
+
     /// <summary>Parent container from a DN. Assumes the leading RDN has no unescaped comma in
     /// its value -- true for every field this service lets callers set. Exposed for unit
     /// testing (see <see cref="BuildSamAccountNameFilter"/> for why).</summary>
@@ -133,9 +185,10 @@ public sealed class UserService(
 
     private void EnsureWithinConfiguredBaseDn(string dn)
     {
-        string baseDn = directoryOptions.Value.BaseDn;
-        if (!IsDnWithinBaseDn(dn, baseDn))
-            throw new InvalidRequestException($"ouPath must be within the configured directory scope ('{baseDn}').");
+        // Message intentionally does not echo the configured base DN -- doing so would disclose
+        // the directory's root structure to a caller probing with out-of-scope paths.
+        if (!IsDnWithinBaseDn(dn, directoryOptions.Value.BaseDn))
+            throw new InvalidRequestException("ouPath must be within the configured directory scope.");
     }
 
     private async Task<SearchResultEntry> FindEntryAsync(string samAccountName, CancellationToken cancellationToken)
@@ -157,6 +210,12 @@ public sealed class UserService(
         "objectGUID", "sAMAccountName", "userPrincipalName", "displayName", "givenName", "sn",
         "mail", "title", "department", "manager", "description", "distinguishedName",
         "userAccountControl",
+    ];
+
+    private static readonly string[] GroupAttributes =
+    [
+        // canonicalName is a constructed attribute -- returned only when explicitly requested.
+        "objectGUID", "sAMAccountName", "displayName", "distinguishedName", "canonicalName",
     ];
 
     private static void AddIfPresent(List<DirectoryAttribute> attributes, string name, string? value)
@@ -197,6 +256,17 @@ public sealed class UserService(
             Enabled = IsEnabled(uac),
         };
     }
+
+    private static GroupDto MapToGroupDto(SearchResultEntry entry) =>
+        new()
+        {
+            ObjectGuid = new Guid((byte[])entry.Attributes["objectGUID"][0]).ToString(),
+            SamAccountName = GetSingle(entry, "sAMAccountName") ?? string.Empty,
+            DisplayName = GetSingle(entry, "displayName"),
+            DistinguishedName = entry.DistinguishedName,
+            // Gracefully absent: some entries/directories don't return canonicalName.
+            CanonicalName = GetSingle(entry, "canonicalName"),
+        };
 
     private static string? GetSingle(SearchResultEntry entry, string attributeName) =>
         entry.Attributes.Contains(attributeName) ? entry.Attributes[attributeName][0] as string : null;
