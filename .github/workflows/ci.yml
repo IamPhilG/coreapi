@@ -33,18 +33,27 @@ jobs:
         run: dotnet build --configuration Release --no-restore
 
       # The unit test project also holds the HTTP end-to-end guardrail tests (Swagger by
-      # environment, rate limiting, health), which boot the app in-memory with no DC and no AWS.
+      # environment, rate limiting, health) and the observability tests, which boot the app
+      # in-memory with no DC and no AWS. A TRX result is written into artifacts/ci for upload.
       - name: Unit + HTTP end-to-end tests (no DC, no AWS)
-        run: dotnet test tests/CoreApi.UnitTests/CoreApi.UnitTests.csproj --configuration Release --no-build
+        run: >-
+          dotnet test tests/CoreApi.UnitTests/CoreApi.UnitTests.csproj
+          --configuration Release --no-build
+          --logger "trx;LogFileName=unit-tests.trx"
+          --results-directory artifacts/ci
 
       # The scan always exits 0, so decide pass/fail from its machine-readable JSON rather than a
       # console phrase (language- and wording-independent). A project only carries a `frameworks`
       # node when it has vulnerable packages; count every vulnerability across top-level and
-      # transitive references and fail if any exist.
+      # transitive references and fail if any exist. Runs even if tests failed so the evidence
+      # bundle is complete; the JSON is written into artifacts/ci for upload.
       - name: Vulnerable package scan
+        if: always()
         shell: pwsh
         run: |
-          $reportPath = Join-Path $env:RUNNER_TEMP "vulnerable-packages.json"
+          $reportDir = Join-Path $env:GITHUB_WORKSPACE "artifacts/ci"
+          New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
+          $reportPath = Join-Path $reportDir "vulnerable-packages.json"
 
           dotnet package list `
             --include-transitive `
@@ -82,3 +91,17 @@ jobs:
             Write-Error "Vulnerable NuGet packages detected."
             exit 1
           }
+
+      # Bundle the TRX test results and the vulnerability JSON as a single downloadable artifact,
+      # even when a previous step failed, so failures are diagnosable from the evidence.
+      - name: Upload CI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-evidence
+          path: artifacts/ci/
+          # These are diagnostic evidence, not releases: keep them recoverable for a while, then
+          # let them expire. warn (not error) so a genuine build failure that produced no files
+          # isn't masked by an artifact-upload failure.
+          retention-days: 30
+          if-no-files-found: warn

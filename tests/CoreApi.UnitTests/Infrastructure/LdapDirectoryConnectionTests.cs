@@ -1,4 +1,5 @@
 using CoreApi.Infrastructure;
+using CoreApi.UnitTests.TestInfrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -15,7 +16,8 @@ public class LdapDirectoryConnectionTests
             UseTls = false // avoid cert callback in unit tests
         };
         configure?.Invoke(opt);
-        return new LdapDirectoryConnection(Options.Create(opt), NullLogger<LdapDirectoryConnection>.Instance);
+        return new LdapDirectoryConnection(
+            Options.Create(opt), NullLogger<LdapDirectoryConnection>.Instance, TestPseudonymizer.Create());
     }
 
     [Fact]

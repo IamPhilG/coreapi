@@ -1,5 +1,7 @@
 using System.DirectoryServices.Protocols;
+using System.Text;
 using CoreApi.Infrastructure;
+using CoreApi.Infrastructure.Observability;
 using CoreApi.IntegrationTests.TestInfrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -40,7 +42,8 @@ public class DirectoryConnectionTests : IDisposable
         _baseDn = options.BaseDn;
         _connection = new LdapDirectoryConnection(
             Options.Create(options),
-            NullLogger<LdapDirectoryConnection>.Instance);
+            NullLogger<LdapDirectoryConnection>.Instance,
+            new HmacPseudonymizer(Encoding.UTF8.GetBytes("coreapi-integration-test-pseudonymization-key-1")));
     }
 
     [Fact]

@@ -42,6 +42,8 @@ internal sealed class GuardrailWebApplicationFactory : WebApplicationFactory<Pro
         builder.UseSetting("DirectoryConnection:Host", "unused.invalid");
         builder.UseSetting("DirectoryConnection:BaseDn", "DC=corp,DC=local");
         builder.UseSetting("DirectoryConnection:UseTls", "true");
+        // Required outside Development/Test; set here so the factory boots in any environment.
+        builder.UseSetting("Observability:PseudonymizationKey", TestPseudonymizer.Key);
 
         foreach ((string key, string? value) in _settings)
             builder.UseSetting(key, value);

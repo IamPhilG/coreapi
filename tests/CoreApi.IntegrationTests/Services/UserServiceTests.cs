@@ -1,5 +1,7 @@
 using System.DirectoryServices.Protocols;
+using System.Text;
 using CoreApi.Infrastructure;
+using CoreApi.Infrastructure.Observability;
 using CoreApi.IntegrationTests.TestInfrastructure;
 using CoreApi.Models;
 using CoreApi.Services;
@@ -32,7 +34,9 @@ public class UserServiceTests : IDisposable
         _usersContainer = $"CN=Users,{directoryOptions.BaseDn}";
         _domain = string.Join(".", directoryOptions.BaseDn.Split(',').Select(p => p[3..]));
         _connection = new LdapDirectoryConnection(
-            Options.Create(directoryOptions), NullLogger<LdapDirectoryConnection>.Instance);
+            Options.Create(directoryOptions),
+            NullLogger<LdapDirectoryConnection>.Instance,
+            new HmacPseudonymizer(Encoding.UTF8.GetBytes("coreapi-integration-test-pseudonymization-key-1")));
         _userService = new UserService(_connection, Options.Create(directoryOptions));
     }
 
