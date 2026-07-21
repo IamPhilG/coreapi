@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.DirectoryServices.Protocols;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
+using CoreApi.Infrastructure.Observability;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -12,6 +14,9 @@ public sealed class LdapDirectoryConnection : IDirectoryConnection, IDisposable
     private readonly TimeSpan _timeout;
     private readonly int _maxSearchResults;
     private readonly ILogger<LdapDirectoryConnection> _logger;
+    private readonly IPseudonymizer _pseudonymizer;
+    private readonly string _host;
+    private readonly string _transport;
     private readonly CancellationTokenSource _shutdownCts = new();
     private readonly SemaphoreSlim _bindLock = new(1, 1);
     private volatile bool _isBound;
@@ -19,12 +24,16 @@ public sealed class LdapDirectoryConnection : IDirectoryConnection, IDisposable
 
     public LdapDirectoryConnection(
         IOptions<DirectoryConnectionOptions> options,
-        ILogger<LdapDirectoryConnection> logger)
+        ILogger<LdapDirectoryConnection> logger,
+        IPseudonymizer pseudonymizer)
     {
         _logger = logger;
+        _pseudonymizer = pseudonymizer;
         var opt = options.Value;
         _timeout = TimeSpan.FromSeconds(opt.TimeoutSeconds);
         _maxSearchResults = opt.MaxSearchResults;
+        _host = opt.Host;
+        _transport = opt.UseTls ? "LDAPS" : "LDAP";
 
         var identifier = new LdapDirectoryIdentifier(opt.Host, opt.Port);
 
@@ -105,77 +114,100 @@ public sealed class LdapDirectoryConnection : IDirectoryConnection, IDisposable
         bool enforceResultCeiling = true,
         CancellationToken cancellationToken = default)
     {
+        long start = Stopwatch.GetTimestamp();
+        string scopeFingerprint = Fingerprint(baseDn);
         var results = new List<SearchResultEntry>();
         int pageSize = maxResults is int m && m < 1000 ? m : 1000;
+        int pageCount = 0;
         var pageControl = new PageResultRequestControl(pageSize);
 
-        do
+        try
         {
-            var request = new SearchRequest(baseDn, filter, scope, attributes);
-            request.TimeLimit = _timeout;
-            request.Controls.Add(pageControl);
-            if (controls != null)
-                foreach (var c in controls)
-                    request.Controls.Add(c);
-
-            var raw = await SendCoreAsync(request, cancellationToken);
-            if (raw is not SearchResponse response)
-                throw new DirectoryOperationException(
-                    null, $"Expected SearchResponse but received {raw.GetType().Name}.");
-
-            foreach (SearchResultEntry entry in response.Entries)
-                results.Add(entry);
-
-            if (maxResults is int cap)
+            do
             {
-                // Caller asked for a bounded page (e.g. an HTTP list endpoint) -- reaching the
-                // cap is a normal stopping point, not an error. Trim in case the last page
-                // overshot it.
-                if (results.Count >= cap)
+                var request = new SearchRequest(baseDn, filter, scope, attributes);
+                request.TimeLimit = _timeout;
+                request.Controls.Add(pageControl);
+                if (controls != null)
+                    foreach (var c in controls)
+                        request.Controls.Add(c);
+
+                var raw = await SendCoreAsync(request, cancellationToken);
+                pageCount++;
+                if (raw is not SearchResponse response)
+                    throw new DirectoryOperationException(
+                        null, $"Expected SearchResponse but received {raw.GetType().Name}.");
+
+                foreach (SearchResultEntry entry in response.Entries)
+                    results.Add(entry);
+
+                if (maxResults is int cap)
                 {
-                    if (results.Count > cap)
-                        results.RemoveRange(cap, results.Count - cap);
-                    return results;
+                    // Caller asked for a bounded page (e.g. an HTTP list endpoint) -- reaching the
+                    // cap is a normal stopping point, not an error. Trim in case the last page
+                    // overshot it.
+                    if (results.Count >= cap)
+                    {
+                        if (results.Count > cap)
+                            results.RemoveRange(cap, results.Count - cap);
+                        break;
+                    }
                 }
+                else if (enforceResultCeiling && results.Count > _maxSearchResults)
+                {
+                    // No explicit page requested and the ceiling is enforced -- this is a lookup
+                    // expected to match a handful of entries at most (e.g. an exact sAMAccountName
+                    // search). Matching this many is itself a sign something is wrong, so fail rather
+                    // than silently truncate. Operations whose full result set is the contract pass
+                    // enforceResultCeiling: false to enumerate every page exhaustively instead.
+                    throw new SearchResultsLimitExceededException(
+                        $"Search on '{baseDn}' matched more than {_maxSearchResults} entries. " +
+                        "Narrow the query (e.g. a more specific base DN or filter) and retry.");
+                }
+
+                var pageResponse = response.Controls
+                    .OfType<PageResultResponseControl>()
+                    .FirstOrDefault();
+
+                if (pageResponse is null && results.Count >= 1000)
+                    _logger.LogWarning(
+                        "LDAP Search on {LdapHost} (object={ObjectFingerprint}) returned no paging cookie; results may be truncated at the server size limit.",
+                        _host, scopeFingerprint);
+
+                pageControl.Cookie = pageResponse?.Cookie ?? Array.Empty<byte>();
             }
-            else if (enforceResultCeiling && results.Count > _maxSearchResults)
-            {
-                // No explicit page requested and the ceiling is enforced -- this is a lookup
-                // expected to match a handful of entries at most (e.g. an exact sAMAccountName
-                // search). Matching this many is itself a sign something is wrong, so fail rather
-                // than silently truncate. Operations whose full result set is the contract pass
-                // enforceResultCeiling: false to enumerate every page exhaustively instead.
-                throw new SearchResultsLimitExceededException(
-                    $"Search on '{baseDn}' matched more than {_maxSearchResults} entries. " +
-                    "Narrow the query (e.g. a more specific base DN or filter) and retry.");
-            }
+            while (pageControl.Cookie.Length > 0);
 
-            var pageResponse = response.Controls
-                .OfType<PageResultResponseControl>()
-                .FirstOrDefault();
-
-            if (pageResponse is null && results.Count >= 1000)
-                _logger.LogWarning(
-                    "SearchAsync on '{BaseDn}' returned no paging cookie; results may be truncated at the server size limit.",
-                    baseDn);
-
-            pageControl.Cookie = pageResponse?.Cookie ?? Array.Empty<byte>();
+            LogSuccess("Search", start, scopeFingerprint, resultCount: results.Count, pageCount: pageCount);
+            return results;
         }
-        while (pageControl.Cookie.Length > 0);
-
-        return results;
+        catch (OperationCanceledException)
+        {
+            LogCancelled("Search", start, scopeFingerprint);
+            throw;
+        }
+        catch (LdapException ex)
+        {
+            LogFailure("Search", start, scopeFingerprint, ex.ErrorCode, ex);
+            throw;
+        }
+        catch (DirectoryOperationException ex)
+        {
+            LogFailure("Search", start, scopeFingerprint, (int?)ex.Response?.ResultCode, ex);
+            throw;
+        }
     }
 
-    public async Task AddAsync(AddRequest request, CancellationToken cancellationToken = default)
-        => await SendCoreAsync(request, cancellationToken);
+    public Task AddAsync(AddRequest request, CancellationToken cancellationToken = default)
+        => ExecuteAsync("Add", request.DistinguishedName, request, cancellationToken);
 
-    public async Task ModifyAsync(ModifyRequest request, CancellationToken cancellationToken = default)
-        => await SendCoreAsync(request, cancellationToken);
+    public Task ModifyAsync(ModifyRequest request, CancellationToken cancellationToken = default)
+        => ExecuteAsync("Modify", request.DistinguishedName, request, cancellationToken);
 
-    public async Task DeleteAsync(string distinguishedName, CancellationToken cancellationToken = default)
-        => await SendCoreAsync(new DeleteRequest(distinguishedName), cancellationToken);
+    public Task DeleteAsync(string distinguishedName, CancellationToken cancellationToken = default)
+        => ExecuteAsync("Delete", distinguishedName, new DeleteRequest(distinguishedName), cancellationToken);
 
-    public async Task MoveAsync(
+    public Task MoveAsync(
         string distinguishedName,
         string? newParentDn,
         string newName,
@@ -183,19 +215,82 @@ public sealed class LdapDirectoryConnection : IDirectoryConnection, IDisposable
     {
         // newParentDn = null → rename in place (same OU). newParentDn = DN → move, optionally rename.
         var request = new ModifyDNRequest(distinguishedName, newParentDn, newName) { DeleteOldRdn = true };
-        await SendCoreAsync(request, cancellationToken);
+        return ExecuteAsync("ModifyDN", distinguishedName, request, cancellationToken);
     }
 
     public async Task<ExtendedResponse> SendExtendedAsync(
         ExtendedRequest request,
         CancellationToken cancellationToken = default)
     {
-        var raw = await SendCoreAsync(request, cancellationToken);
+        var raw = await ExecuteAsync("Extended", distinguishedName: null, request, cancellationToken);
         if (raw is not ExtendedResponse response)
             throw new DirectoryOperationException(
                 null, $"Expected ExtendedResponse but received {raw.GetType().Name}.");
         return response;
     }
+
+    // Times a single (non-search) LDAP operation and emits a structured success/failure/cancelled
+    // log carrying only an operation category, target host/transport, duration, and (on error)
+    // the LDAP result code -- never the filter, the full DN, or any credential.
+    private async Task<DirectoryResponse> ExecuteAsync(
+        string operation, string? distinguishedName, DirectoryRequest request, CancellationToken cancellationToken)
+    {
+        long start = Stopwatch.GetTimestamp();
+        string fingerprint = Fingerprint(distinguishedName);
+        try
+        {
+            var response = await SendCoreAsync(request, cancellationToken);
+            LogSuccess(operation, start, fingerprint);
+            return response;
+        }
+        catch (OperationCanceledException)
+        {
+            LogCancelled(operation, start, fingerprint);
+            throw;
+        }
+        catch (LdapException ex)
+        {
+            LogFailure(operation, start, fingerprint, ex.ErrorCode, ex);
+            throw;
+        }
+        catch (DirectoryOperationException ex)
+        {
+            LogFailure(operation, start, fingerprint, (int?)ex.Response?.ResultCode, ex);
+            throw;
+        }
+    }
+
+    private void LogSuccess(string operation, long start, string objectFingerprint, int? resultCount = null, int? pageCount = null) =>
+        _logger.LogInformation(
+            ObservabilityEvents.LdapOperationSucceeded,
+            "LDAP {LdapOperation} on {LdapHost} ({LdapTransport}) succeeded in {ElapsedMilliseconds:0.0} ms " +
+            "(object={ObjectFingerprint}, results={ResultCount}, pages={PageCount})",
+            operation, _host, _transport, Stopwatch.GetElapsedTime(start).TotalMilliseconds,
+            objectFingerprint, resultCount, pageCount);
+
+    // Directory/LDAP failures are EXPECTED operational errors: the raw exception is never handed to
+    // ILogger (no Message, no ToString, no unredacted server diagnostics) -- only its type, the
+    // LDAP result code, and a category. Correlation/trace ids ride on the ambient scope.
+    private void LogFailure(string operation, long start, string objectFingerprint, int? ldapCode, Exception exception) =>
+        _logger.LogWarning(
+            ObservabilityEvents.LdapOperationFailed,
+            "LDAP {LdapOperation} on {LdapHost} ({LdapTransport}) failed in {ElapsedMilliseconds:0.0} ms " +
+            "(object={ObjectFingerprint}, exceptionType={ExceptionType}, errorCategory={ErrorCategory}, ldapCode={LdapCode})",
+            operation, _host, _transport, Stopwatch.GetElapsedTime(start).TotalMilliseconds,
+            objectFingerprint, exception.GetType().Name, "directory_error", ldapCode);
+
+    private void LogCancelled(string operation, long start, string objectFingerprint) =>
+        _logger.LogWarning(
+            ObservabilityEvents.LdapOperationCancelled,
+            "LDAP {LdapOperation} on {LdapHost} ({LdapTransport}) was cancelled or timed out after {ElapsedMilliseconds:0.0} ms " +
+            "(object={ObjectFingerprint}, errorCategory={ErrorCategory})",
+            operation, _host, _transport, Stopwatch.GetElapsedTime(start).TotalMilliseconds,
+            objectFingerprint, "cancelled");
+
+    // A stable, keyed tag for a DN/base DN so operations on the same object can be correlated in
+    // logs without ever recording the directory structure in clear.
+    private string Fingerprint(string? distinguishedName) =>
+        _pseudonymizer.ObjectFingerprint(distinguishedName);
 
     // Binds on first use; retries on reconnect. Thread-safe via semaphore.
     private async Task EnsureBoundAsync(CancellationToken cancellationToken)
