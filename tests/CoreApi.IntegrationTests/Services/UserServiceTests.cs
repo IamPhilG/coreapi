@@ -1,3 +1,4 @@
+using System.DirectoryServices.Protocols;
 using CoreApi.Infrastructure;
 using CoreApi.IntegrationTests.TestInfrastructure;
 using CoreApi.Models;
@@ -89,6 +90,63 @@ public class UserServiceTests : IDisposable
     {
         await Assert.ThrowsAsync<NotFoundException>(
             () => _userService.GetBySamAccountNameAsync($"does-not-exist-{Guid.NewGuid():N}"));
+    }
+
+    // Verifies the direct-membership contract against a real DC:
+    //   User -> direct member of Group-A ; Group-A -> member of Group-B
+    // GetGroupMemberships(User) must return Group-A and MUST NOT return Group-B (no transitive
+    // expansion, no LDAP_MATCHING_RULE_IN_CHAIN).
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task GetGroupMembershipsAsync_returns_only_direct_groups_AgainstRealDc()
+    {
+        string suffix = Guid.NewGuid().ToString("N")[..8];
+        string sam = $"itest{suffix}";
+        string userDn = $"CN={sam},{_usersContainer}";
+        string groupASam = $"grpA{suffix}";
+        string groupBSam = $"grpB{suffix}";
+        string groupADn = $"CN={groupASam},{_usersContainer}";
+        string groupBDn = $"CN={groupBSam},{_usersContainer}";
+
+        await _userService.CreateAsync(new CreateUserRequest
+        {
+            SamAccountName = sam,
+            UserPrincipalName = $"{sam}@{_domain}",
+            OuPath = _usersContainer,
+        });
+
+        try
+        {
+            // Group-A has the user as a direct member.
+            await _connection.AddAsync(new AddRequest(groupADn,
+                new DirectoryAttribute("objectClass", "group"),
+                new DirectoryAttribute("sAMAccountName", groupASam),
+                new DirectoryAttribute("displayName", "Group A"),
+                new DirectoryAttribute("member", userDn)));
+
+            // Group-B has Group-A as a member (nested) -- the user is NOT a direct member of it.
+            await _connection.AddAsync(new AddRequest(groupBDn,
+                new DirectoryAttribute("objectClass", "group"),
+                new DirectoryAttribute("sAMAccountName", groupBSam),
+                new DirectoryAttribute("member", groupADn)));
+
+            var groups = await _userService.GetGroupMembershipsAsync(sam);
+
+            Assert.Contains(groups, g => g.SamAccountName == groupASam);
+            Assert.DoesNotContain(groups, g => g.SamAccountName == groupBSam);
+
+            var groupA = groups.Single(g => g.SamAccountName == groupASam);
+            Assert.NotEmpty(groupA.ObjectGuid);
+            Assert.Equal(groupADn, groupA.DistinguishedName);   // DN is exposed, not masked
+            Assert.Equal("Group A", groupA.DisplayName);
+            Assert.False(string.IsNullOrEmpty(groupA.CanonicalName)); // AD returns canonicalName
+        }
+        finally
+        {
+            await _connection.DeleteAsync(groupBDn);
+            await _connection.DeleteAsync(groupADn);
+            await _userService.DeleteAsync(sam);
+        }
     }
 
     public void Dispose() => _connection.Dispose();

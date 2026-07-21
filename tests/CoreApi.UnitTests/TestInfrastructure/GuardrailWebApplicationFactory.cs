@@ -67,6 +67,9 @@ internal sealed class GuardrailWebApplicationFactory : WebApplicationFactory<Pro
         public Task<UserDto> GetBySamAccountNameAsync(string samAccountName, CancellationToken cancellationToken = default) =>
             Task.FromResult(Sample);
 
+        public Task<IReadOnlyList<GroupDto>> GetGroupMembershipsAsync(string samAccountName, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<GroupDto>>([]);
+
         public Task<IReadOnlyList<UserDto>> ListAsync(string? ouPath, int pageSize, CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<UserDto>>([Sample]);
 

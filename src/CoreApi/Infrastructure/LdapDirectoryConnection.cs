@@ -102,6 +102,7 @@ public sealed class LdapDirectoryConnection : IDirectoryConnection, IDisposable
         string[]? attributes = null,
         DirectoryControl[]? controls = null,
         int? maxResults = null,
+        bool enforceResultCeiling = true,
         CancellationToken cancellationToken = default)
     {
         var results = new List<SearchResultEntry>();
@@ -137,11 +138,13 @@ public sealed class LdapDirectoryConnection : IDirectoryConnection, IDisposable
                     return results;
                 }
             }
-            else if (results.Count > _maxSearchResults)
+            else if (enforceResultCeiling && results.Count > _maxSearchResults)
             {
-                // No explicit page requested -- this is a lookup expected to match a handful of
-                // entries at most (e.g. an exact sAMAccountName search). Matching this many is
-                // itself a sign something is wrong, so fail rather than silently truncate.
+                // No explicit page requested and the ceiling is enforced -- this is a lookup
+                // expected to match a handful of entries at most (e.g. an exact sAMAccountName
+                // search). Matching this many is itself a sign something is wrong, so fail rather
+                // than silently truncate. Operations whose full result set is the contract pass
+                // enforceResultCeiling: false to enumerate every page exhaustively instead.
                 throw new SearchResultsLimitExceededException(
                     $"Search on '{baseDn}' matched more than {_maxSearchResults} entries. " +
                     "Narrow the query (e.g. a more specific base DN or filter) and retry.");
