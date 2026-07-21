@@ -1,10 +1,13 @@
+using System.Security.Claims;
 using System.Security.Cryptography;
+using System.Threading.RateLimiting;
 using CoreApi.Infrastructure;
 using CoreApi.Infrastructure.Authorization;
 using CoreApi.Infrastructure.Conventions;
 using CoreApi.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc.ApplicationModels;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 
@@ -127,21 +130,79 @@ builder.Services.AddOptions<DirectoryConnectionOptions>()
 builder.Services.AddSingleton<IDirectoryConnection, LdapDirectoryConnection>();
 builder.Services.AddScoped<IUserService, UserService>();
 
+// Minimal single-node rate limiting (COREAPI-02). Enabled by default outside Development so
+// local Swagger and local tests are never throttled; the switch and limits are configurable.
+builder.Services.AddOptions<RateLimitOptions>()
+    .BindConfiguration(RateLimitOptions.SectionName)
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+var rateLimitOptions =
+    builder.Configuration.GetSection(RateLimitOptions.SectionName).Get<RateLimitOptions>() ?? new RateLimitOptions();
+bool rateLimitingEnabled = rateLimitOptions.Enabled ?? !builder.Environment.IsDevelopment();
+
+if (rateLimitingEnabled)
+{
+    builder.Services.AddRateLimiter(limiter =>
+    {
+        // Fail fast with 429 rather than absorbing bursts behind a queue.
+        limiter.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+        limiter.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+            RateLimitPartition.GetFixedWindowLimiter(
+                ResolveRateLimitPartitionKey(context),
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = rateLimitOptions.PermitLimit,
+                    Window = TimeSpan.FromSeconds(rateLimitOptions.WindowSeconds),
+                    QueueLimit = rateLimitOptions.QueueLimit,
+                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                }));
+    });
+}
+
 var app = builder.Build();
 
 app.UseExceptionHandler();
 app.UseStatusCodePages(); // Formats non-exception 4xx/5xx as RFC 7807 ProblemDetails bodies.
-app.UseSwagger();
-app.UseSwaggerUI(options => options.SwaggerEndpoint("/swagger/v1/swagger.json", "CoreApi v1"));
+
+// Swagger/OpenAPI is a Development-only surface: the endpoints themselves are never mapped
+// outside Development, so /swagger/* returns 404 in Production rather than being hidden visually.
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI(options => options.SwaggerEndpoint("/swagger/v1/swagger.json", "CoreApi v1"));
+}
 
 app.UseHttpsRedirection();
 app.UseAuthentication();
+// After authentication so the limiter can partition by the authenticated identity when present.
+if (rateLimitingEnabled)
+    app.UseRateLimiter();
 app.UseAuthorization();
 
 app.MapControllers();
-app.MapHealthChecks("/health");
+// Liveness/readiness probes must never be throttled: exclude /health from the global limiter
+// so a burst of probes (or unrelated traffic sharing its partition) can't turn it into a 429.
+app.MapHealthChecks("/health")
+    .DisableRateLimiting();
 
 app.Run();
+
+// Partitions rate-limit buckets by, in order of preference: a stable authenticated identity,
+// then the client IP, then an explicit shared fallback when neither is available.
+static string ResolveRateLimitPartitionKey(HttpContext context)
+{
+    if (context.User.Identity?.IsAuthenticated == true)
+    {
+        string? subject = context.User.FindFirstValue("sub")
+            ?? context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!string.IsNullOrEmpty(subject))
+            return $"user:{subject}";
+    }
+
+    string? ip = context.Connection.RemoteIpAddress?.ToString();
+    return string.IsNullOrEmpty(ip) ? "anonymous" : $"ip:{ip}";
+}
 
 // Exposes the top-level Program class to WebApplicationFactory<Program> in the test projects.
 public partial class Program;
