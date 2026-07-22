@@ -17,9 +17,12 @@ public sealed class EvidenceScriptBehaviorTests
     [Fact]
     public void Refuses_a_dirty_working_tree_without_the_override()
     {
-        // The real repo working tree is dirty (this very increment). Without -AllowDirtyWorkingTree
-        // the script must refuse before doing anything, with a distinct non-zero code.
-        (int exit, string output) = RunInRepo("-SkipTestExecution");
+        // The dirtiness is created here, in a throwaway repo -- never inherited from the checkout
+        // running the tests, which is clean in CI and arbitrary locally.
+        using var repo = new TempGitRepo(ScriptPath);
+        repo.MakeDirty();
+
+        (int exit, string output) = repo.RunScript("-SkipTestExecution");
 
         Assert.Equal(3, exit);
         Assert.Contains("Refusing", output, StringComparison.OrdinalIgnoreCase);
@@ -28,7 +31,10 @@ public sealed class EvidenceScriptBehaviorTests
     [Fact]
     public void Dirty_tree_with_override_produces_a_development_only_bundle()
     {
-        (int exit, string output) = RunInRepo("-AllowDirtyWorkingTree", "-SkipTestExecution");
+        using var repo = new TempGitRepo(ScriptPath);
+        repo.MakeDirty();
+
+        (int exit, string output) = repo.RunScript("-AllowDirtyWorkingTree", "-SkipTestExecution");
 
         Assert.Equal(0, exit);
         JsonElement manifest = ReadManifest(output);
@@ -115,9 +121,6 @@ public sealed class EvidenceScriptBehaviorTests
         throw new InvalidOperationException($"Could not find the evidence directory in script output:\n{output}");
     }
 
-    private static (int ExitCode, string Output) RunInRepo(params string[] scriptArgs) =>
-        PowerShell.RunScript(ScriptPath, RepoPaths.Root, scriptArgs);
-
     private sealed class TempGitRepo : IDisposable
     {
         public string Root { get; }
@@ -137,6 +140,16 @@ public sealed class EvidenceScriptBehaviorTests
 
         public (int ExitCode, string Output) RunScript(params string[] scriptArgs) =>
             PowerShell.RunScript(_scriptPath, Root, scriptArgs);
+
+        /// <summary>
+        /// Makes this throwaway repository's working tree dirty on purpose, by adding an untracked
+        /// file: `git status --porcelain` then reports it, which is exactly what the script reads.
+        /// Tests that need a dirty tree call this instead of relying on the checkout they run in.
+        /// </summary>
+        public void MakeDirty()
+        {
+            File.WriteAllText(Path.Combine(Root, "uncommitted-marker.txt"), "deliberately untracked\n");
+        }
 
         private void Run(string exe, params string[] args)
         {
