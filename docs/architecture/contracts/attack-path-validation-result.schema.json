@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IamPhilG/coreapi/docs/architecture/contracts/attack-path-validation-result.schema.json",
+  "title": "AttackPathValidationResult",
+  "description": "Statut: propose, non implemente. Constat produit APRES execution du geste, apres recollecte et nouvelle analyse. Consomme par CoreAPI, jamais produit par lui. L'ecart entre executedAt et revalidatedAt est la fenetre pendant laquelle l'assurance est nulle.",
+  "$comment": "LIMITES DE JSON SCHEMA, ASSUMEES ICI. Ce schema NE PEUT PAS: (1) comparer deux horodatages entre eux - il ne verifie donc pas que revalidatedAt est posterieur a executedAt, ni que dataCollectedAt l'est; (2) comparer une valeur de ce document a une valeur contenue dans un AUTRE document - il ne verifie donc pas que measureDefinitionRef et measureVersion sont identiques a ceux de l'AttackPathAssessment reference, ni que assessmentRef resout vers une evaluation existante. Ces controles sont SEMANTIQUES et relevent d'un validateur de pipeline ou d'application. Le schema encode ce qu'il peut: les attestations booleennes, la presence des champs, et l'interdiction des combinaisons incoherentes dans un meme objet.",
+  "type": "object",
+  "required": [
+    "contractVersion",
+    "proposedChangeId",
+    "executedAt",
+    "revalidatedAt",
+    "certainty",
+    "measureName",
+    "measureDefinitionRef",
+    "measureVersion",
+    "conformity",
+    "providerId",
+    "providerKind"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "contractVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "proposedChangeId": { "type": "string", "minLength": 1 },
+    "assessmentRef": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Reference de l'evaluation prealable. Obligatoire et non vide pour declarer Verified. Que cette reference RESOLVE vers une evaluation existante est un controle semantique."
+    },
+    "executedAt": { "type": "string", "format": "date-time" },
+    "revalidatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Doit etre posterieur a executedAt - COMPARAISON SEMANTIQUE, non verifiable par ce schema."
+    },
+    "dataCollectedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Horodatage de la RECOLLECTE. Doit etre posterieur a executedAt - COMPARAISON SEMANTIQUE, non verifiable par ce schema. L'attestation booleenne recollectionAfterChange existe precisement parce que le schema ne sait pas comparer deux dates."
+    },
+    "recollectionAfterChange": {
+      "type": "boolean",
+      "description": "Attestation explicite que la recollecte est posterieure au geste. Doit valoir true pour Verified. Le validateur semantique doit confirmer cette attestation contre les horodatages reels."
+    },
+    "targetCovered": { "type": "boolean" },
+    "completeness": { "enum": ["Complete", "Partial", "Unknown"] },
+    "certainty": {
+      "enum": ["Verified", "Unknown"],
+      "description": "Verified: constate apres une recollecte posterieure au geste, exploitable et comparable. Unknown: aucune donnee. Le cas intermediaire est porte par conformity=Inconclusive."
+    },
+    "measureName": { "type": "string", "minLength": 1 },
+    "measureDefinitionRef": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Doit etre identique a celui de l'evaluation prealable - CONTROLE CROISE ENTRE DOCUMENTS, non verifiable par ce schema."
+    },
+    "measureVersion": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Doit etre identique a celle de l'evaluation prealable - CONTROLE CROISE ENTRE DOCUMENTS, non verifiable par ce schema."
+    },
+    "measuresComparable": {
+      "type": "boolean",
+      "description": "Attestation que les mesures avant et apres sont comparables. Doit valoir true pour Verified. Le validateur semantique doit confirmer cette attestation contre l'evaluation reference."
+    },
+    "measureBefore": { "type": "number", "description": "Obligatoire pour Verified." },
+    "measureAfter": { "type": "number", "description": "Obligatoire pour Verified." },
+    "deltaVsExpected": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "expectedDelta": { "type": "number" },
+        "observedDelta": { "type": "number" },
+        "unexplainedRelations": { "type": "integer", "minimum": 0, "description": "Compte agrege uniquement - ADDS-AP-006." }
+      }
+    },
+    "conformity": {
+      "enum": ["AsExpected", "Divergent", "Inconclusive"],
+      "description": "AsExpected et Divergent supposent une comparaison reelle, donc Verified. Inconclusive couvre recollecte absente, partielle, non attestee posterieure, mesure non comparable, ou evaluation prealable non referencee."
+    },
+    "divergenceNote": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Obligatoire et non vide lorsque conformity vaut Divergent. Aucun chemin detaille, aucun principal intermediaire."
+    },
+    "rulesetVersion": { "type": "string", "minLength": 1 },
+    "providerId": { "type": "string", "minLength": 1, "description": "OBLIGATOIRE. Reference OPAQUE, resolue au deploiement. Aucun produit nomme." },
+    "providerKind": { "enum": ["Internal", "External"], "description": "OBLIGATOIRE. Un constat posterieur, y compris Unknown, conserve la provenance de l'evaluateur qui a TENTE la validation: sans elle, une tentative infructueuse n'est imputable a personne." }
+  },
+  "allOf": [
+    {
+      "$comment": "Conditions de Verified verifiables par ce schema: presence et valeur des attestations, presence des mesures avant/apres, reference d'evaluation non vide. La posteriorite reelle des horodatages et l'identite des definitions de mesure restent semantiques.",
+      "if": { "properties": { "certainty": { "const": "Verified" } }, "required": ["certainty"] },
+      "then": {
+        "required": [
+          "assessmentRef",
+          "dataCollectedAt",
+          "recollectionAfterChange",
+          "targetCovered",
+          "completeness",
+          "measuresComparable",
+          "measureBefore",
+          "measureAfter"
+        ],
+        "properties": {
+          "recollectionAfterChange": { "const": true },
+          "targetCovered": { "const": true },
+          "completeness": { "const": "Complete" },
+          "measuresComparable": { "const": true }
+        }
+      }
+    },
+    {
+      "$comment": "Verified + Inconclusive est une contradiction: un constat verifie a produit une comparaison, donc AsExpected ou Divergent.",
+      "if": { "properties": { "certainty": { "const": "Verified" } }, "required": ["certainty"] },
+      "then": { "properties": { "conformity": { "enum": ["AsExpected", "Divergent"] } } }
+    },
+    {
+      "$comment": "AsExpected ou Divergent supposent une comparaison reelle, donc un constat Verified.",
+      "if": { "properties": { "conformity": { "enum": ["AsExpected", "Divergent"] } }, "required": ["conformity"] },
+      "then": { "properties": { "certainty": { "const": "Verified" } } }
+    },
+    {
+      "$comment": "Une divergence non qualifiee n'est pas exploitable pour un arbitrage.",
+      "if": { "properties": { "conformity": { "const": "Divergent" } }, "required": ["conformity"] },
+      "then": { "required": ["divergenceNote"] }
+    }
+  ]
+}

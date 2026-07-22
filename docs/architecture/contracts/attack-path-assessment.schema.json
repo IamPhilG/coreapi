@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IamPhilG/coreapi/docs/architecture/contracts/attack-path-assessment.schema.json",
+  "title": "AttackPathAssessment",
+  "description": "Statut: propose, non implemente. Resultat d'evaluation d'un ProposedDirectoryChange, produit par un evaluateur externe et consomme par CoreAPI. Une evaluation precede l'execution: elle ne peut jamais valoir Verified. Observed decrit l'ETAT ACTUEL et ne predit PAS l'effet du changement; seul Simulated porte sur un etat hypothetique.",
+  "$comment": "capability est obligatoire et gouverne la certitude admissible. La provenance est obligatoire des qu'une evaluation existe: providerId opaque + providerKind generique, aucun produit nomme. Unknown n'exige aucune mesure et interdit d'en presenter une: il porte a la place une raison structuree d'indetermination.",
+  "type": "object",
+  "required": [
+    "contractVersion",
+    "proposedChangeId",
+    "assessedAt",
+    "capability",
+    "certainty",
+    "providerId",
+    "providerKind"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "contractVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "proposedChangeId": { "type": "string", "minLength": 1 },
+    "assessedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Horodatage de l'EVALUATION. A ne pas confondre avec dataCollectedAt."
+    },
+    "capability": {
+      "enum": ["CurrentStateAssessment", "ProposedChangeSimulation"],
+      "description": "OBLIGATOIRE. CurrentStateAssessment mesure l'exposition ACTUELLE et ne dit rien de l'effet du changement. ProposedChangeSimulation est la seule capacite permettant d'affirmer qu'un changement augmenterait l'exposition."
+    },
+    "certainty": {
+      "enum": ["Observed", "Simulated", "Unknown"],
+      "description": "Observed: etat actuel constate. Simulated: etat hypothetique calcule. Unknown: aucune donnee exploitable - n'est JAMAIS favorable. Verified est volontairement absent: reserve a AttackPathValidationResult."
+    },
+    "providerId": { "type": "string", "minLength": 1, "description": "Reference OPAQUE de l'evaluateur, resolue au deploiement. Aucun produit n'est nomme." },
+    "providerKind": { "enum": ["Internal", "External"], "description": "Nature generique. None est absent: une evaluation existe forcement par un evaluateur." },
+    "dataCollectedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Horodatage de la COLLECTE, pas de l'evaluation. L'ecart avec assessedAt est l'ecart de fraicheur - comparaison semantique, hors de portee de JSON Schema."
+    },
+    "dataQuality": {
+      "type": "object",
+      "required": ["freshnessHours", "freshnessThresholdMet", "completeness", "targetCovered"],
+      "additionalProperties": false,
+      "properties": {
+        "freshnessHours": { "type": "number", "minimum": 0 },
+        "freshnessThresholdMet": { "type": "boolean" },
+        "completeness": { "enum": ["Complete", "Partial", "Unknown"] },
+        "targetCovered": { "type": "boolean", "description": "Une collecte complete sur un perimetre excluant la cible ne vaut rien pour ce geste." },
+        "collectionScopeNote": { "type": "string", "minLength": 1 }
+      }
+    },
+    "indeterminacyReason": {
+      "enum": ["ProviderUnavailable", "DataTooOld", "PartialCollection", "TargetNotCovered", "ModelIncapable", "OtherDeclaredReason"],
+      "description": "Obligatoire lorsque certainty vaut Unknown. Evite d'inventer une mesure numerique pour un resultat qui n'en a pas."
+    },
+    "indeterminacyNote": { "type": "string", "minLength": 1, "description": "Obligatoire lorsque indeterminacyReason vaut OtherDeclaredReason." },
+    "simulation": {
+      "type": "object",
+      "required": ["observedBaselineRef", "modelVersion", "modelledRelationTypes"],
+      "additionalProperties": false,
+      "description": "Obligatoire lorsque certainty vaut Simulated. Une simulation calcule sur les relations que son modele connait: elle ne prouve JAMAIS l'absence de chemin.",
+      "properties": {
+        "observedBaselineRef": { "type": "string", "minLength": 1, "description": "Reference de l'etat OBSERVE de depart." },
+        "modelVersion": { "type": "string", "minLength": 1 },
+        "modelledRelationTypes": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "exposureMeasure": {
+      "type": "object",
+      "required": ["measureName", "measureDefinitionRef", "measureVersion", "value"],
+      "additionalProperties": false,
+      "description": "Mesure nommee, referencee ET versionnee. Comparer deux mesures de definitions ou de versions differentes produit un artefact, pas un ecart.",
+      "properties": {
+        "measureName": { "type": "string", "minLength": 1 },
+        "measureDefinitionRef": { "type": "string", "minLength": 1 },
+        "measureVersion": { "type": "string", "minLength": 1 },
+        "value": { "type": "number" },
+        "unit": { "type": "string", "minLength": 1 },
+        "privilegedZoneId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "description": "Constats AGREGES uniquement. Aucun chemin detaille n'entre dans CoreAPI - ADDS-AP-006.",
+      "items": {
+        "type": "object",
+        "required": ["privilegedZoneId", "pathCount"],
+        "additionalProperties": false,
+        "properties": {
+          "privilegedZoneId": { "type": "string", "minLength": 1 },
+          "pathCount": { "type": "integer", "minimum": 0 },
+          "shortestPathLength": { "type": "integer", "minimum": 0 },
+          "severity": { "enum": ["informational", "low", "medium", "high", "critical"] }
+        }
+      }
+    },
+    "providerAdvisory": {
+      "enum": ["InformOnly", "RequireAcknowledgement", "RequireApproval", "PreventByPolicy"],
+      "description": "AVIS facultatif, jamais une instruction. CoreAPI applique le comportement declare dans le profil de l'organisation."
+    },
+    "policyRuleId": { "type": "string", "minLength": 1 },
+    "rulesetVersion": { "type": "string", "minLength": 1 }
+  },
+  "allOf": [
+    {
+      "$comment": "Observed exige la capacite d'etat actuel, une collecte horodatee, une mesure, un seuil de fraicheur respecte et une cible couverte.",
+      "if": { "properties": { "certainty": { "const": "Observed" } }, "required": ["certainty"] },
+      "then": {
+        "required": ["dataCollectedAt", "dataQuality", "exposureMeasure"],
+        "properties": {
+          "capability": { "const": "CurrentStateAssessment" },
+          "dataQuality": {
+            "properties": {
+              "freshnessThresholdMet": { "const": true },
+              "targetCovered": { "const": true }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Simulated exige la capacite de simulation, un etat observe de depart, la version du modele, les relations modelisees et une mesure exploitable.",
+      "if": { "properties": { "certainty": { "const": "Simulated" } }, "required": ["certainty"] },
+      "then": {
+        "required": ["simulation", "exposureMeasure"],
+        "properties": { "capability": { "const": "ProposedChangeSimulation" } }
+      }
+    },
+    {
+      "$comment": "Unknown exige une raison structuree et INTERDIT une mesure: un resultat indetermine ne porte aucune valeur exploitable.",
+      "if": { "properties": { "certainty": { "const": "Unknown" } }, "required": ["certainty"] },
+      "then": {
+        "required": ["indeterminacyReason"],
+        "not": { "required": ["exposureMeasure"] }
+      }
+    },
+    {
+      "$comment": "Une raison OtherDeclaredReason doit etre explicitee.",
+      "if": { "properties": { "indeterminacyReason": { "const": "OtherDeclaredReason" } }, "required": ["indeterminacyReason"] },
+      "then": { "required": ["indeterminacyNote"] }
+    },
+    {
+      "$comment": "La capacite d'etat actuel ne peut pas produire Simulated.",
+      "if": { "properties": { "capability": { "const": "CurrentStateAssessment" } }, "required": ["capability"] },
+      "then": { "properties": { "certainty": { "enum": ["Observed", "Unknown"] } } }
+    },
+    {
+      "$comment": "La capacite de simulation ne peut pas produire Observed.",
+      "if": { "properties": { "capability": { "const": "ProposedChangeSimulation" } }, "required": ["capability"] },
+      "then": { "properties": { "certainty": { "enum": ["Simulated", "Unknown"] } } }
+    }
+  ]
+}
