@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IamPhilG/coreapi/docs/architecture/contracts/proposed-directory-change.schema.json",
+  "title": "ProposedDirectoryChange",
+  "description": "Statut: propose, non implemente. Description normalisee d'un geste d'annuaire ENVISAGE, produite par CoreAPI avant toute execution. L'existence d'un objet conforme ne signifie ni qu'un geste a eu lieu, ni qu'il aura lieu. Ce contrat ne porte aucun verdict, aucun score, aucune recommandation. Aucun fournisseur n'y est nomme.",
+  "$comment": "Trois acteurs distincts: callingApplication (toujours une application, CoreAPI n'acceptant que client_credentials), originatingActor (acteur metier amont, connu par assertion seulement), proposedBy (origine de la proposition). Toutes les operations enumerees modifient l'annuaire: writeIntent est obligatoire et doit valoir true, ce qui engage l'exigence RWDC (SI-03) au niveau de la politique de deploiement.",
+  "type": "object",
+  "required": [
+    "contractVersion",
+    "proposedChangeId",
+    "correlationId",
+    "operation",
+    "writeIntent",
+    "target",
+    "callingApplication",
+    "originatingActor",
+    "proposedBy",
+    "requestedAt"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "contractVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "proposedChangeId": { "type": "string", "minLength": 1 },
+    "correlationId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifiant de correlation propage. Seul lien possible avec les segments amont."
+    },
+    "declaredProfileVersion": { "type": "string", "minLength": 1 },
+    "operation": {
+      "enum": ["create", "update", "delete", "addMember", "removeMember", "modifyAccessControl", "modifyOwnership", "move"],
+      "description": "Geste normalise. Les huit operations enumerees MODIFIENT toutes l'annuaire. Aucune inference entre gestes."
+    },
+    "writeIntent": {
+      "type": "boolean",
+      "description": "OBLIGATOIRE et coherent avec l'operation. Toutes les operations actuellement enumerees etant des ecritures, cette valeur doit etre true. Une capacite d'ecriture sans RWDC disponible est une incompatibilite structurelle (SI-03); le choix du controleur reste une politique de deploiement, hors de ce contrat."
+    },
+    "target": {
+      "type": "object",
+      "required": ["objectId", "objectClass"],
+      "additionalProperties": false,
+      "properties": {
+        "objectId": { "type": "string", "minLength": 1 },
+        "objectClass": { "type": "string", "minLength": 1 },
+        "containerId": { "type": "string", "minLength": 1 },
+        "distinguishedName": { "type": "string", "minLength": 1, "description": "Chemin lisible. Optionnel et deconseille par defaut: PII et donnee de topologie." }
+      }
+    },
+    "intendedEffects": {
+      "type": "array",
+      "description": "Effets attendus DECLARES par l'appelant. Ce sont des intentions, pas des constats.",
+      "items": {
+        "type": "object",
+        "required": ["relation", "fromObjectId", "toObjectId", "direction"],
+        "additionalProperties": false,
+        "properties": {
+          "relation": { "type": "string", "minLength": 1 },
+          "fromObjectId": { "type": "string", "minLength": 1 },
+          "toObjectId": { "type": "string", "minLength": 1 },
+          "direction": {
+            "enum": ["added", "removed", "retained"],
+            "description": "OBLIGATOIRE: un effet attendu sans sens de variation n'est pas exploitable pour mesurer un ecart."
+          }
+        }
+      }
+    },
+    "callingApplication": {
+      "type": "object",
+      "required": ["applicationId"],
+      "additionalProperties": false,
+      "description": "TOUJOURS une application: CoreAPI n'accepte que client_credentials. Verifie a chaque appel.",
+      "properties": {
+        "applicationId": { "type": "string", "minLength": 1 },
+        "integrationRecordRef": { "type": "string", "minLength": 1 }
+      }
+    },
+    "originatingActor": {
+      "type": "object",
+      "required": ["verificationLevel"],
+      "additionalProperties": false,
+      "description": "OBLIGATOIRE. Acteur metier amont. CoreAPI verifie la presence et l'integrite de l'assertion, JAMAIS le processus metier qui l'a produite. L'absence d'acteur metier se declare EXPLICITEMENT par verificationLevel=Absent: omettre entierement ce bloc est rejete, car une omission ne se distingue pas d'un oubli.",
+      "properties": {
+        "actorRef": { "type": "string", "minLength": 1 },
+        "assertedBy": { "type": "string", "minLength": 1, "description": "Systeme amont ayant emis l'assertion. Identifiant generique, aucun produit nomme." },
+        "verificationLevel": {
+          "enum": ["Verified", "AssertedNotVerified", "Absent"],
+          "description": "Verified: assertion cryptographiquement liee et verifiee par CoreAPI. AssertedNotVerified: assertion presente, non verifiable par CoreAPI. Absent: aucun acteur metier declare. AssertedNotVerified ne doit jamais etre presente comme Verified dans une trace d'audit."
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "Un acteur declare, verifie ou non, doit etre identifie et rattache a un emetteur.",
+          "if": { "properties": { "verificationLevel": { "enum": ["Verified", "AssertedNotVerified"] } }, "required": ["verificationLevel"] },
+          "then": { "required": ["actorRef", "assertedBy"] }
+        },
+        {
+          "$comment": "Absent signifie qu'aucun acteur metier n'est declare: porter un actorRef ou un assertedBy serait contradictoire.",
+          "if": { "properties": { "verificationLevel": { "const": "Absent" } }, "required": ["verificationLevel"] },
+          "then": {
+            "allOf": [
+              { "not": { "required": ["actorRef"] } },
+              { "not": { "required": ["assertedBy"] } }
+            ]
+          }
+        }
+      ]
+    },
+    "proposedBy": {
+      "type": "object",
+      "required": ["origin"],
+      "additionalProperties": false,
+      "description": "OBLIGATOIRE. Origine de la PROPOSITION, distincte de l'appelant et de l'acteur metier. Une proposition issue d'un composant d'analyse ou d'assistance entre dans CoreAPI comme une DONNEE, jamais comme un appelant: elle traverse le controle d'autorisation normal, sans allegement.",
+      "properties": {
+        "origin": {
+          "enum": ["Human", "Automation", "AiAssisted"],
+          "description": "AiAssisted signale une proposition issue d'un composant d'assistance. Toute ecriture directe ou indirecte dans AD DS par une IA est non developpee, non planifiee, non souhaitee et absente de la roadmap actuelle: ce composant ne detient jamais l'identite d'ecriture, n'emprunte, ne declenche ni ne pilote l'identite d'execution de CoreAPI, n'appelle aucun endpoint executoire, et ne transforme jamais lui-meme une proposition en geste (ADDS-AP-005, SI-01)."
+        },
+        "proposalRef": { "type": "string", "minLength": 1 },
+        "proposalCertainty": {
+          "enum": ["Observed", "Simulated", "Unknown"],
+          "description": "Verified est impossible ici: une proposition precede l'execution."
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "Une proposition d'origine IA doit etre tracable, faute de quoi ADDS-AP-005 n'est pas verifiable.",
+          "if": { "properties": { "origin": { "const": "AiAssisted" } }, "required": ["origin"] },
+          "then": { "required": ["proposalRef"] }
+        }
+      ]
+    },
+    "requestedAt": { "type": "string", "format": "date-time" },
+    "governanceReference": {
+      "type": "object",
+      "required": ["referenceType", "referenceId"],
+      "additionalProperties": false,
+      "description": "Reference d'autorisation amont. Lorsqu'elle est presente, son type et son identifiant non vide sont exiges: une reference sans identifiant n'est pas une preuve. CoreAPI verifie la presence et l'integrite de la reference; il ne rejoue jamais le processus metier qui l'a produite.",
+      "properties": {
+        "referenceType": { "enum": ["ticket", "workflowRequest", "preAuthorizedScope", "dualControl"] },
+        "referenceId": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "Coherence writeIntent / operation: les huit operations enumerees modifient toutes l'annuaire. Si une operation de lecture etait ajoutee un jour a l'enumeration, cette regle devrait etre revue en meme temps.",
+      "if": {
+        "properties": {
+          "operation": { "enum": ["create", "update", "delete", "addMember", "removeMember", "modifyAccessControl", "modifyOwnership", "move"] }
+        },
+        "required": ["operation"]
+      },
+      "then": { "properties": { "writeIntent": { "const": true } } }
+    }
+  ]
+}

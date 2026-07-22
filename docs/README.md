@@ -26,6 +26,7 @@ Les documents sous `docs/` couvrent **uniquement le produit et le dépôt CoreAP
 | Dépendances externes (IdP, AWS, etc.) | [`product/repository-dependencies.md`](product/repository-dependencies.md) |
 | L'architecture technique complète | [`architecture/coreapi-sad.md`](architecture/coreapi-sad.md) |
 | Les diagrammes (contexte, flux d'autorisation, déploiement) | [`architecture/views/`](architecture/views/) |
+| Les contrats d'intégration futurs « chemins d'attaque » (proposés, non implémentés) | [`architecture/views/attack-path-protection-integration.md`](architecture/views/attack-path-protection-integration.md) + [`architecture/contracts/`](architecture/contracts/) |
 | Comment construire, tester, lancer le projet | [`implementation/implementation-guide.md`](implementation/implementation-guide.md) |
 | Le catalogue de toutes les spécifications et leur statut réel | [`specifications/README.md`](specifications/README.md) + [`specifications/catalog.yml`](specifications/catalog.yml) |
 | Les décisions actées et leurs alternatives écartées | [`adr/decisions-log.md`](adr/decisions-log.md) |

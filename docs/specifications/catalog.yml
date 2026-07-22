@@ -312,6 +312,19 @@ specs:
       - "LDAPS + validation certificat/hostname déjà implémentées et testées (SPEC-2) ; ce qui reste planned est la politique de signing/channel binding pour un futur mécanisme Negotiate/SASL"
     last_reviewed: "2026-07-19"
 
+  - id: SEC-06
+    title: Protection des chemins d'attaque — contrats d'intégration
+    type: security
+    status: planned
+    owner: Philippe
+    depends_on: [SEC-01, SEC-03]
+    blocks: []
+    source_requests: [session-2026-07-22]
+    acceptance_evidence:
+      - "aucune : aucun code correspondant sous src/CoreApi/ (absence vérifiée le 2026-07-22)"
+      - "surface de contrat documentaire uniquement — docs/architecture/contracts/ (3 schémas JSON, non implémentés)"
+    last_reviewed: "2026-07-22"
+
   # --- Spikes ---
 
   - id: SPIKE-01
