@@ -47,6 +47,15 @@ jobs:
       # node when it has vulnerable packages; count every vulnerability across top-level and
       # transitive references and fail if any exist. Runs even if tests failed so the evidence
       # bundle is complete; the JSON is written into artifacts/ci for upload.
+      #
+      # Null-safety matters here: in PowerShell `@($null).Count` is 1, not 0. Wrapping a missing
+      # node directly in @() therefore yields a one-element array holding $null, and the previous
+      # parser counted that phantom element. With three clean projects (no `frameworks` node at
+      # all) it reported six vulnerabilities instead of zero. Every level is now filtered with
+      # `Where-Object { $null -ne $_ }` so an absent node contributes exactly zero, and only real
+      # entries of the `vulnerabilities` array are counted. Fail-closed behaviour is unchanged:
+      # a failed command, a missing/empty report, unparseable JSON, or any real vulnerability
+      # still fails the build.
       - name: Vulnerable package scan
         if: always()
         shell: pwsh
@@ -78,10 +87,12 @@ jobs:
           }
 
           $count = 0
-          foreach ($project in @($report.projects)) {
-            foreach ($framework in @($project.frameworks)) {
-              foreach ($package in @($framework.topLevelPackages) + @($framework.transitivePackages)) {
-                $count += @($package.vulnerabilities).Count
+          foreach ($project in @($report.projects | Where-Object { $null -ne $_ })) {
+            foreach ($framework in @($project.frameworks | Where-Object { $null -ne $_ })) {
+              $packages = @($framework.topLevelPackages   | Where-Object { $null -ne $_ }) +
+                          @($framework.transitivePackages | Where-Object { $null -ne $_ })
+              foreach ($package in $packages) {
+                $count += @($package.vulnerabilities | Where-Object { $null -ne $_ }).Count
               }
             }
           }
